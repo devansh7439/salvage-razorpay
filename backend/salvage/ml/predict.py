@@ -62,17 +62,29 @@ def load_model(path: Path | None = None) -> dict[str, Any]:
 
     Guarded by a lock because FastAPI serves requests from a thread pool and a
     torn read of a partially-loaded bundle would be a miserable thing to debug.
+
+    An explicit `path` loads that model *without* touching the process cache.
+    The previous behaviour reloaded from disk whenever a path was passed and
+    then overwrote the shared cache with it, so a single test or script that
+    loaded an alternative model silently repointed inference for the rest of
+    the process.
     """
     global _bundle
-    target = path or MODEL_PATH
+
+    if path is not None:
+        if not path.exists():
+            raise ModelNotTrainedError(
+                f"No model at {path}. Run: python -m salvage.ml.train"
+            )
+        return joblib.load(path)
 
     with _lock:
-        if _bundle is None or path is not None:
-            if not target.exists():
+        if _bundle is None:
+            if not MODEL_PATH.exists():
                 raise ModelNotTrainedError(
-                    f"No model at {target}. Run: python -m salvage.ml.train"
+                    f"No model at {MODEL_PATH}. Run: python -m salvage.ml.train"
                 )
-            _bundle = joblib.load(target)
+            _bundle = joblib.load(MODEL_PATH)
     return _bundle
 
 
@@ -95,11 +107,23 @@ def predict_propensity(event: Any) -> float:
     return predict_propensity_batch([event])[0]
 
 
-def predict_propensity_batch(events: list[Any]) -> list[float]:
-    """Vectorised propensity scoring.
+#: Rows per `predict_proba` call. Caps the size of the dense feature matrix
+#: built for one inference pass. One-hot encoding widens each event to ~25
+#: float64 columns, so an unbounded batch allocates a matrix proportional to
+#: the whole input - fine at a thousand events, an out-of-memory error at ten
+#: million. Throughput is flat above a few thousand rows, so there is nothing
+#: to lose by bounding it.
+INFERENCE_CHUNK = 4096
+
+
+def predict_propensity_batch(
+    events: list[Any], chunk_size: int = INFERENCE_CHUNK
+) -> list[float]:
+    """Vectorised propensity scoring, in bounded chunks.
 
     Batched deliberately: scoring a thousand payments one at a time spends
     almost all its time in per-call pipeline overhead rather than in the forest.
+    Chunked equally deliberately, so peak memory does not scale with the input.
     """
     if not events:
         return []
@@ -108,26 +132,30 @@ def predict_propensity_batch(events: list[Any]) -> list[float]:
     pipeline = bundle["pipeline"]
     reference = RecoveryAction(bundle["reference_action"])
 
-    frame = pd.DataFrame([extract(e) for e in events], columns=list(ALL_FEATURES))
-    probabilities = pipeline.predict_proba(frame)[:, 1]
-
     out: list[float] = []
-    for event, p_reference in zip(events, probabilities):
-        classification = classify(
-            getattr(event, "error_reason", None),
-            getattr(event, "error_code", None),
-            getattr(event, "error_source", None),
-            getattr(event, "error_step", None),
+    for start in range(0, len(events), chunk_size):
+        window = events[start : start + chunk_size]
+        frame = pd.DataFrame(
+            [extract(e) for e in window], columns=list(ALL_FEATURES)
         )
-        failure_class = classification.failure_class.value
-        fit = effectiveness(failure_class, reference)
+        probabilities = pipeline.predict_proba(frame)[:, 1]
 
-        # Untrained classes get a neutral divisor. Dividing by a genuinely zero
-        # effectiveness would send the propensity to its ceiling and inflate
-        # every expected value derived from it.
-        if failure_class in UNTRAINED_CLASSES or fit < MIN_USABLE_FIT:
-            fit = NEUTRAL_REFERENCE_FIT
+        for event, p_reference in zip(window, probabilities):
+            classification = classify(
+                getattr(event, "error_reason", None),
+                getattr(event, "error_code", None),
+                getattr(event, "error_source", None),
+                getattr(event, "error_step", None),
+            )
+            failure_class = classification.failure_class.value
+            fit = effectiveness(failure_class, reference)
 
-        out.append(float(min(1.0, max(0.0, p_reference / fit))))
+            # Untrained classes get a neutral divisor. Dividing by a genuinely
+            # zero effectiveness would send the propensity to its ceiling and
+            # inflate every expected value derived from it.
+            if failure_class in UNTRAINED_CLASSES or fit < MIN_USABLE_FIT:
+                fit = NEUTRAL_REFERENCE_FIT
+
+            out.append(float(min(1.0, max(0.0, p_reference / fit))))
 
     return out

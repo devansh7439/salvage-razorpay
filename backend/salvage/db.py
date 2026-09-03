@@ -122,6 +122,17 @@ CREATE INDEX IF NOT EXISTS idx_audit_event  ON audit_trail(event_id, id);
 CREATE INDEX IF NOT EXISTS idx_events_time  ON events(created_at);
 CREATE INDEX IF NOT EXISTS idx_dec_action   ON decisions(action);
 CREATE INDEX IF NOT EXISTS idx_exec_event   ON executions(event_id);
+
+-- Contact-frequency guardrails join executions back to a customer. Without
+-- this index that lookup degrades to a full scan of both tables on every
+-- batch, which is the first thing to bite as event volume grows.
+CREATE INDEX IF NOT EXISTS idx_events_cust  ON events(customer_id);
+CREATE INDEX IF NOT EXISTS idx_exec_contact ON executions(action, status);
+
+-- The recovery queue orders by amount. Indexing it keeps pagination cheap
+-- once the table is large enough that a sort would spill.
+CREATE INDEX IF NOT EXISTS idx_events_amt   ON events(amount DESC);
+CREATE INDEX IF NOT EXISTS idx_dec_except   ON decisions(is_exception);
 """
 
 
@@ -131,11 +142,22 @@ def now_iso() -> str:
 
 
 @contextmanager
-def connect(path: Path | None = None) -> Iterator[sqlite3.Connection]:
+def connect(
+    path: Path | None = None, *, bulk: bool = False
+) -> Iterator[sqlite3.Connection]:
     """Open a connection with sane defaults, committing or rolling back.
 
     WAL is enabled so the dashboard can read while a batch is still writing -
     without it, a long ingest run blocks every API request behind it.
+
+    Args:
+        path: Database file. Defaults to the configured location.
+        bulk: Tune for write throughput on ingest. Raises the page cache and
+            relaxes `synchronous` from FULL to NORMAL, which under WAL still
+            survives a process crash - only a host power loss can lose the
+            tail of the most recent transaction. That is the right trade for
+            replayable batch ingest and the wrong one for interactive writes,
+            so it is opt-in rather than the default.
     """
     target = path or settings.database_path
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -144,6 +166,10 @@ def connect(path: Path | None = None) -> Iterator[sqlite3.Connection]:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    if bulk:
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA cache_size=-65536")  # 64 MB
+        conn.execute("PRAGMA temp_store=MEMORY")
     try:
         yield conn
         conn.commit()

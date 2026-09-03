@@ -15,6 +15,7 @@ admits to an unresolved case is not being honest about its coverage.
 from __future__ import annotations
 
 import json
+import threading
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -34,7 +35,21 @@ from salvage.simulator.generate import generate_events
 DEMO_BATCH_SIZE = 1000
 DEMO_SEED = 77771111
 
+#: Hard ceiling on a single page of the recovery queue.
+MAX_PAGE_SIZE = 500
+
 _demo_events: list[Any] = []
+_demo_lock = threading.Lock()
+
+#: Cached evaluation. Recomputing it means regenerating the batch and running
+#: full model inference plus three strategies - a third of a second at a
+#: thousand events, and linear from there. The dashboard polls this endpoint,
+#: so without a cache every viewer pays that cost on every render.
+#:
+#: Invalidated whenever a batch is reloaded, which is the only thing that can
+#: change the answer.
+_evaluation_cache: dict[str, Any] | None = None
+_evaluation_lock = threading.Lock()
 
 
 @asynccontextmanager
@@ -71,11 +86,17 @@ app.add_middleware(
 
 
 def _demo_batch() -> list[Any]:
-    """The evaluation batch, generated once per process."""
+    """The evaluation batch, generated once per process.
+
+    Locked because FastAPI serves from a thread pool: two concurrent first
+    requests would otherwise both see an empty list and each generate a full
+    batch, doubling the work and leaving whichever finished last installed.
+    """
     global _demo_events
-    if not _demo_events:
-        _demo_events = generate_events(DEMO_BATCH_SIZE, seed=DEMO_SEED)
-    return _demo_events
+    with _demo_lock:
+        if not _demo_events:
+            _demo_events = generate_events(DEMO_BATCH_SIZE, seed=DEMO_SEED)
+        return _demo_events
 
 
 @app.get("/health")
@@ -155,10 +176,16 @@ async def webhook(
 @app.post("/api/simulate/load")
 def load_batch(execute_actions: bool = True) -> dict[str, Any]:
     """Reset the database and run the demo batch end to end."""
+    global _evaluation_cache
+
     db.reset_db()
     events = _demo_batch()
     result = process_batch(events, execute_actions=execute_actions)
     recorded = record_outcomes(events)
+
+    with _evaluation_lock:
+        _evaluation_cache = None
+
     return {**result, "outcomes_recorded": recorded}
 
 
@@ -231,10 +258,21 @@ def list_events(
     limit: int = 100, offset: int = 0, action: str | None = None
 ) -> dict[str, Any]:
     """The live recovery queue, ordered by the money at stake."""
+    # `limit` is clamped rather than trusted. An unbounded value lets any
+    # caller ask for the entire table in one response, which is both a memory
+    # spike in the server and a trivially cheap way to degrade it.
+    limit = max(1, min(limit, MAX_PAGE_SIZE))
+    offset = max(0, offset)
+
     clause = "WHERE d.action = ?" if action else ""
     params: list[Any] = [action] if action else []
 
     with db.connect() as conn:
+        # `executions` is one-to-many with `events` - a payment can be retried
+        # and later sent a link. Joining it directly multiplies the result row
+        # per execution, silently inflating the queue and every count taken
+        # from it. A correlated subquery picks the latest execution instead, so
+        # exactly one row is returned per payment.
         rows = conn.execute(
             f"""
             SELECT e.id, e.amount, e.method, e.customer_name, e.error_code,
@@ -242,11 +280,12 @@ def list_events(
                    d.failure_class, d.base_propensity, d.action, d.net_ev,
                    d.action_probability, d.rule_id, d.is_exception,
                    o.recovered, o.incremental_paise,
-                   x.payment_link_url
+                   (SELECT x.payment_link_url FROM executions x
+                     WHERE x.event_id = e.id
+                     ORDER BY x.id DESC LIMIT 1) AS payment_link_url
             FROM events e
-            LEFT JOIN decisions  d ON d.event_id = e.id
-            LEFT JOIN outcomes   o ON o.event_id = e.id
-            LEFT JOIN executions x ON x.event_id = e.id
+            LEFT JOIN decisions d ON d.event_id = e.id
+            LEFT JOIN outcomes  o ON o.event_id = e.id
             {clause}
             ORDER BY e.amount DESC
             LIMIT ? OFFSET ?
@@ -354,7 +393,17 @@ def exceptions() -> dict[str, Any]:
 
 @app.get("/api/evaluate")
 def evaluate() -> dict[str, Any]:
-    """Head-to-head comparison against the baselines, on the same batch."""
+    """Head-to-head comparison against the baselines, on the same batch.
+
+    Cached until the next batch load. The result is deterministic for a given
+    batch, so recomputing it per request buys nothing.
+    """
+    global _evaluation_cache
+
+    with _evaluation_lock:
+        if _evaluation_cache is not None:
+            return _evaluation_cache
+
     from salvage.evaluate import evaluate_batch
 
     report = evaluate_batch(_demo_batch())
@@ -366,4 +415,6 @@ def evaluate() -> dict[str, Any]:
     except (OSError, json.JSONDecodeError):
         report["model"] = None
 
+    with _evaluation_lock:
+        _evaluation_cache = report
     return report

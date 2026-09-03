@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import hashlib
 import random
+from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -91,6 +92,10 @@ REASON_WEIGHTS: dict[str, float] = {
 #: path is exercised by real data rather than only by unit tests - a live
 #: gateway does send these, and a system that has never seen one is untested.
 GENERIC_REASON_RATE = 0.04
+
+#: Ceiling on the simulated customer base. Bounds the generator's fixed setup
+#: cost so streaming stays lazy at any event volume.
+MAX_CUSTOMER_POOL = 50_000
 
 #: Payment methods weighted to the Indian market, where UPI dominates.
 METHOD_WEIGHTS: dict[str, float] = {
@@ -230,7 +235,11 @@ def _true_base_propensity(
 
 
 def generate_events(n: int, seed: int = 20260903) -> list[SyntheticEvent]:
-    """Generate a batch of synthetic failed payments.
+    """Generate a batch of synthetic failed payments, chronologically ordered.
+
+    Materialises the whole batch, because ordering by timestamp requires seeing
+    every event first. For large volumes prefer `stream_events`, which yields
+    lazily at the cost of that ordering.
 
     Args:
         n: How many events to produce.
@@ -239,6 +248,22 @@ def generate_events(n: int, seed: int = 20260903) -> list[SyntheticEvent]:
 
     Returns:
         A list of SyntheticEvent, chronologically ordered.
+    """
+    events = list(stream_events(n, seed=seed))
+    events.sort(key=lambda e: e.created_at)
+    return events
+
+
+def stream_events(n: int, seed: int = 20260903) -> Iterator[SyntheticEvent]:
+    """Yield synthetic failed payments lazily, in generation order.
+
+    Memory stays flat regardless of `n` - only the customer pool is retained,
+    which is a fraction of the event count. Use this to drive the pipeline at
+    volumes where holding every event at once would not fit.
+
+    Ordering is *not* chronological. Nothing downstream depends on event order
+    (outcomes are keyed on payment id, and contact guardrails read committed
+    state from the database), so the ordering exists for presentation only.
     """
     if n < 1:
         raise ValueError(f"n must be positive, got {n}")
@@ -252,7 +277,14 @@ def generate_events(n: int, seed: int = 20260903) -> list[SyntheticEvent]:
     # repeat: the same people fail repeatedly, and that history is most of what
     # a merchant can actually learn from. At three events each the observed
     # success rate is almost pure noise and there is nothing to learn.
-    n_customers = max(4, n // 8)
+    #
+    # Capped, because the pool is built eagerly before the first event is
+    # yielded. Scaling it with `n` unbounded makes the generator allocate
+    # proportionally to the requested volume up front - which defeats the point
+    # of streaming, and at large `n` hangs the process before producing
+    # anything. A real merchant's customer base is bounded too; past this size
+    # customers simply recur more often, which is what actually happens.
+    n_customers = max(4, min(n // 8, MAX_CUSTOMER_POOL))
     customers: list[dict] = []
     for i in range(n_customers):
         reliability = rng.betavariate(4.2, 2.6)
@@ -274,7 +306,6 @@ def generate_events(n: int, seed: int = 20260903) -> list[SyntheticEvent]:
     issuer_health = 0.85
 
     base_time = datetime(2026, 9, 1, 0, 0, tzinfo=timezone.utc)
-    events: list[SyntheticEvent] = []
 
     for i in range(n):
         cust = customers[rng.randrange(n_customers)]
@@ -332,8 +363,7 @@ def generate_events(n: int, seed: int = 20260903) -> list[SyntheticEvent]:
             else "BAD_REQUEST_ERROR"
         )
 
-        events.append(
-            SyntheticEvent(
+        yield SyntheticEvent(
                 id=f"pay_{hashlib.md5(f'{seed}:{i}'.encode()).hexdigest()[:14]}",
                 order_id=f"order_{hashlib.md5(f'{seed}:o:{i}'.encode()).hexdigest()[:14]}",
                 amount=amount,
@@ -365,12 +395,8 @@ def generate_events(n: int, seed: int = 20260903) -> list[SyntheticEvent]:
                 _true_intent=round(intent, 4),
                 _true_issuer_health=round(issuer_health, 4),
                 _true_base_propensity=round(true_prop, 4),
-            )
         )
 
         cust["prior_failures"] += 1
         if rng.random() < cust["reliability"]:
             cust["prior_payments"] += 1
-
-    events.sort(key=lambda e: e.created_at)
-    return events

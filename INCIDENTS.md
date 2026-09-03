@@ -434,3 +434,63 @@ the signature of stale state, not of broken logic.
 never against ones that have been alive across edits. `--reload` is a
 development convenience, not a substitute for confirming what is actually
 loaded, and a long-lived server is a cache like any other.
+
+---
+
+## INC-009 — Webhook redelivery produced two interventions for one payment
+**When:** 2026-09-04, scalability pass
+**Severity:** High — customer-visible, and would have shipped
+
+**What broke.** A test written to assert that reprocessing a batch is a no-op
+failed:
+
+```
+run 1: {'PAYMENT_LINK': 7, 'RETRY_SCHEDULED': 8, 'DROP': 5}
+run 2: {'DROP': 10, 'RETRY_SCHEDULED': 9, 'PAYMENT_LINK': 1}
+
+pay_0c5c5678047a65  x2  actions = PAYMENT_LINK, RETRY_SCHEDULED
+```
+
+One payment received a payment link on the first delivery and a scheduled
+retry on the second.
+
+**Root cause.** Idempotency was enforced one level too low. `executions` carries
+a `UNIQUE` idempotency key derived from `(payment_id, action)`, which correctly
+prevents the *same* action running twice. But on redelivery the pipeline
+re-decides from scratch, and by then the contact guardrails can see the message
+sent on the first pass — so they legitimately suppress the payment link and pick
+a different action instead. A different action means a different key, and the
+uniqueness constraint never fires.
+
+Every individual component behaved exactly as designed. The guardrails
+suppressing the second contact is *correct*; that is what they are for. The bug
+was that the payment was being decided twice at all.
+
+**Why this would have shipped.** Razorpay redelivers `payment.failed` on any
+non-2xx response or timeout, so this is normal operation, not an edge case. It
+was invisible in every measurement taken so far because the demo batch is loaded
+exactly once into a freshly reset database. Only an explicit
+"process the same batch twice" test surfaced it.
+
+**Fix.** Idempotency moved up to the decision layer. `_process_chunk` looks up
+which payments already carry a decision and skips them, returning a `skipped`
+count so a redelivery is observably a no-op rather than silently one. A
+`reprocess=True` flag exists for deliberate replays, such as after changing
+policy parameters.
+
+```
+run 1: processed 20, skipped 0
+run 2: processed  0, skipped 20     duplicated interventions: 0
+```
+
+Verified end to end against the live webhook endpoint: the first POST returns
+`{"processed": 1}`, every subsequent identical POST returns
+`{"processed": 0, "skipped": 1}`.
+
+**Lesson applied.** Idempotency has to be enforced at the level of the decision,
+not the level of the side effect. Guarding each individual action still permits
+a *sequence* of different actions, and the guard looks correct in isolation the
+entire time. The general form: a uniqueness constraint only protects the
+identity it is keyed on, so key it on the thing that must happen once — here,
+"this payment gets one recovery decision" — rather than on the mechanism that
+happens to carry it out.
