@@ -248,7 +248,11 @@ def generate_events(n: int, seed: int = 20260903) -> list[SyntheticEvent]:
     # A pool of customers reused across events, so history means something.
     # Real recovery data is not one-shot: the same people fail repeatedly, and
     # that repetition is most of the signal.
-    n_customers = max(4, n // 3)
+    # Roughly eight events per customer. Real recovery populations are heavily
+    # repeat: the same people fail repeatedly, and that history is most of what
+    # a merchant can actually learn from. At three events each the observed
+    # success rate is almost pure noise and there is nothing to learn.
+    n_customers = max(4, n // 8)
     customers: list[dict] = []
     for i in range(n_customers):
         reliability = rng.betavariate(4.2, 2.6)

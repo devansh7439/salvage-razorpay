@@ -1,0 +1,59 @@
+{
+  "n_total": 6000,
+  "n_train": 4138,
+  "n_test": 1304,
+  "n_excluded": 558,
+  "base_rate": 0.3352,
+  "roc_auc": 0.5746,
+  "brier": 0.2198,
+  "brier_baseline": 0.2233,
+  "brier_improvement_pct": 1.56,
+  "propensity_correlation": 0.5398,
+  "oracle_auc": 0.6286,
+  "oracle_brier": 0.2138,
+  "signal_captured_pct": 58.0,
+  "calibration_bins": [
+    {
+      "range": "0.00-0.12",
+      "n": 16,
+      "predicted": 0.0622,
+      "observed": 0.1875
+    },
+    {
+      "range": "0.12-0.25",
+      "n": 99,
+      "predicted": 0.2151,
+      "observed": 0.1717
+    },
+    {
+      "range": "0.25-0.38",
+      "n": 833,
+      "predicted": 0.3203,
+      "observed": 0.3289
+    },
+    {
+      "range": "0.38-0.50",
+      "n": 344,
+      "predicted": 0.4091,
+      "observed": 0.4041
+    },
+    {
+      "range": "0.50-0.62",
+      "n": 9,
+      "predicted": 0.5369,
+      "observed": 0.5556
+    },
+    {
+      "range": "0.62-0.75",
+      "n": 2,
+      "predicted": 0.6508,
+      "observed": 0.5
+    },
+    {
+      "range": "0.75-0.88",
+      "n": 1,
+      "predicted": 0.8314,
+      "observed": 0.0
+    }
+  ]
+}

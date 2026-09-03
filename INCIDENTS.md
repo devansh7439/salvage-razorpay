@@ -141,3 +141,83 @@ Rs 8 payment     -> DROP             (NOTIFY prices at negative net EV)
 winner, to see it. The `considered` field was added to `PolicyDecision` for
 debugging and then kept permanently: it is now what the dashboard's decision
 inspector renders, so the same visibility that caught this is what a judge sees.
+
+---
+
+## INC-004 — "The model is broken" turned out to be "the problem is noisy"
+**When:** 2026-09-03, Phase 4
+**Severity:** Medium — nearly caused a wrong fix
+
+**What looked broken.** First training run:
+
+```
+ROC AUC           0.5664
+Brier             0.2268
+always-base-rate  0.2290   ->  0.9% improvement
+```
+
+An AUC of 0.57 is close enough to a coin flip to look like a failed model, and
+a 0.9% Brier improvement over a constant predictor reads as "learned nothing."
+
+**The trap.** The obvious response is to reach for a stronger estimator —
+gradient boosting, more trees, more features — or to conclude the feature set
+is inadequate. Both would have consumed hours. Neither would have helped, and
+one of them would have quietly made things worse.
+
+**What was actually going on.** Recovery outcomes are Bernoulli draws. A
+payment with a true recovery probability of 0.35 recovers 35% of the time and
+fails 65% of the time, and *no* model can do better than knowing that number.
+The ceiling on any metric here is set by irreducible noise, not by the
+estimator. The right question was never "is 0.57 good?" but "what is the best
+score anything could achieve on this data?"
+
+Because this is a simulation, that ceiling is computable. Scoring the oracle's
+*true* per-payment probabilities against the realised labels gives the
+Bayes-optimal result:
+
+```
+ceiling AUC     0.6286     (a model that knew every true probability)
+ceiling Brier   0.2138     (irreducible floor)
+```
+
+So the attainable range for AUC was never 0.5 → 1.0. It was 0.5 → 0.629. The
+model was capturing a meaningful share of it, and the headline number was
+measuring the problem's difficulty, not the model's quality.
+
+**Fix.** Two changes, in that order of importance:
+
+1. **Report against the ceiling, permanently.** `TrainingReport` now carries
+   `oracle_auc`, `oracle_brier`, and `signal_captured` — the fraction of
+   attainable ranking signal the model actually recovers. Every future
+   evaluation is read against what is possible rather than against 1.0.
+2. **One real tuning fix.** `max_features="sqrt"` was starving each split: on a
+   one-hot-widened matrix of ~25 columns it sampled about five per split, while
+   nearly all the signal sits in two numeric columns, so most splits could not
+   see the predictive features at all. Moving to `max_features=0.5` addressed
+   the actual constraint. Customers were also given more history (~8 events
+   each rather than ~3), since an observed success rate over three payments is
+   almost pure noise — a data-realism fix, not a model fix.
+
+**After.**
+
+```
+ROC AUC          0.5746  against a ceiling of 0.6286  ->  58% of attainable signal
+Brier            0.2198  vs 0.2233 base rate, 0.2138 floor
+propensity r     0.540   (latent driver the model never sees)
+
+reliability, held-out customers:
+  0.25-0.38   n=833   predicted 0.320   observed 0.329
+  0.38-0.50   n=344   predicted 0.409   observed 0.404
+```
+
+Calibration is within roughly one point in the buckets holding ~90% of volume,
+which is the property that matters, because this probability is multiplied by
+rupees.
+
+**Lesson applied.** A metric with no stated ceiling is not a result, it is a
+number. On a noisy problem the ceiling is the whole story — and reporting "58%
+of attainable signal, calibrated to within a point" is both more useful and
+more honest than reporting an AUC that a reviewer has no way to interpret. It
+is also the safer posture: a suspiciously high AUC on synthetic data is
+evidence of leakage, not of quality, and we would rather be able to prove the
+absence of a leak than post an impressive number.
