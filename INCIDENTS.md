@@ -494,3 +494,91 @@ entire time. The general form: a uniqueness constraint only protects the
 identity it is keyed on, so key it on the thing that must happen once — here,
 "this payment gets one recovery decision" — rather than on the mechanism that
 happens to carry it out.
+
+---
+
+## INC-010 — Ingest was quadratic in batch size
+**When:** 2026-09-04, scalability pass
+**Severity:** High — invisible at demo scale, fatal at production scale
+
+**What broke.** After the chunking work, a scale test showed per-event cost
+getting *worse* as volume grew, which is the opposite of what batching should
+do:
+
+```
+  1,000 events    18.4s    18.44 ms/event
+ 10,000 events    36.1s     3.61 ms/event
+ 50,000 events  1373.2s    27.46 ms/event     <- 7.6x worse than 10k
+```
+
+Linear work gets cheaper per unit as fixed costs amortise. Getting *more*
+expensive per unit is the signature of a superlinear term.
+
+**Diagnosis.** Rather than guess, each per-chunk operation was timed against a
+growing table:
+
+```
+ table size   _contact_counts   _already_decided
+      4,000           13.3 ms            2.1 ms
+      8,000           25.8 ms            2.5 ms
+     16,000           73.8 ms            3.4 ms
+     24,000          112.0 ms            4.5 ms
+```
+
+`_contact_counts` scaled linearly with the size of the table, and it runs once
+per chunk. Once-per-chunk work that grows with total data written is
+O(chunks x table size) — quadratic in batch size. `_already_decided` was flat,
+so the index there was doing its job.
+
+**Root cause.** The contact-frequency guardrail asks "how many messages has
+this customer already had?". `customer_id` lived only on `events`, so the query
+had to join `executions` to `events` to reach it:
+
+```sql
+FROM executions x JOIN events e ON e.id = x.event_id
+WHERE ... AND e.customer_id IN (...)
+```
+
+Both tables grow with every batch, so the join cost grew with them.
+
+**Fix.** Denormalise `customer_id` onto `executions` and add a covering index
+on `(customer_id, action, status)`. The join disappears; the query becomes a
+single index lookup whose cost depends on the number of *matching* rows rather
+than the size of the table.
+
+```
+ table size   _contact_counts
+      4,000            4.2 ms
+      8,000            4.9 ms
+     16,000           30.0 ms
+     24,000            9.2 ms
+```
+
+Flat, with ordinary measurement noise, against a clean linear climb before.
+
+**End to end.**
+
+```
+                before              after
+  1,000     18.44 ms/event     18.44 ms/event   (model load, one-off)
+ 10,000      3.61 ms/event      3.83 ms/event
+ 50,000     27.46 ms/event      4.12 ms/event   <- 6.7x faster
+```
+
+Per-event cost is now flat between 10,000 and 50,000 rather than climbing
+sevenfold, which is what linear scaling looks like. Peak memory stayed flat
+throughout at 8.6 MB and 11.6 MB respectively — that was already correct, and
+was never the problem. The 1,000-event row is dominated by the one-off model
+load and does not represent steady-state throughput.
+
+**Lesson applied.** The rule this yields is worth stating generally: **work done
+once per chunk must not scale with the data already written.** Chunking bounds
+memory and transaction size, but it does nothing for time complexity — and it
+can disguise the problem, because each individual chunk still looks fast. A
+batch job that is quadratic in its input is entirely invisible at demo scale
+and unusable at production scale, and the only way to see it is to measure per
+unit rather than in total.
+
+It also reinforces INC-004's lesson from a different direction: the first three
+attempts at explaining this slowdown were guesses, and all three were wrong.
+Timing the individual operations against a growing table found it in one pass.

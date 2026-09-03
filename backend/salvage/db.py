@@ -83,6 +83,12 @@ CREATE TABLE IF NOT EXISTS decisions (
 CREATE TABLE IF NOT EXISTS executions (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     event_id            TEXT NOT NULL REFERENCES events(id),
+    -- Denormalised from events. Contact-frequency guardrails ask "how many
+    -- messages has this customer had?" once per chunk, and reaching customer_id
+    -- through a join to events made that query cost grow with the whole table:
+    -- O(chunks x table size), i.e. quadratic in batch size. Carrying the column
+    -- here turns it into a single covered index lookup.
+    customer_id         TEXT,
     executed_at         TEXT NOT NULL,
     action              TEXT NOT NULL,
     status              TEXT NOT NULL,
@@ -123,11 +129,13 @@ CREATE INDEX IF NOT EXISTS idx_events_time  ON events(created_at);
 CREATE INDEX IF NOT EXISTS idx_dec_action   ON decisions(action);
 CREATE INDEX IF NOT EXISTS idx_exec_event   ON executions(event_id);
 
--- Contact-frequency guardrails join executions back to a customer. Without
--- this index that lookup degrades to a full scan of both tables on every
--- batch, which is the first thing to bite as event volume grows.
 CREATE INDEX IF NOT EXISTS idx_events_cust  ON events(customer_id);
-CREATE INDEX IF NOT EXISTS idx_exec_contact ON executions(action, status);
+
+-- Covering index for the contact-frequency guardrail. Ordered so the equality
+-- predicates come first, letting SQLite satisfy the whole query from the index
+-- without touching the table.
+CREATE INDEX IF NOT EXISTS idx_exec_contact
+    ON executions(customer_id, action, status);
 
 -- The recovery queue orders by amount. Indexing it keeps pagination cheap
 -- once the table is large enough that a sort would spill.
@@ -201,6 +209,43 @@ def reset_db(path: Path | None = None) -> None:
         conn.executescript(SCHEMA)
 
 
+#: One buffered audit row, ready for `executemany`.
+AuditRow = tuple[str, str, str, str, str | None]
+
+_AUDIT_SQL = (
+    "INSERT INTO audit_trail (event_id, timestamp, stage, summary, detail_json)"
+    " VALUES (?, ?, ?, ?, ?)"
+)
+
+
+def audit_row(
+    event_id: str,
+    stage: str,
+    summary: str,
+    detail: dict[str, Any] | None = None,
+) -> AuditRow:
+    """Build one audit row without writing it.
+
+    The pipeline emits six audit rows per payment, and issuing them as six
+    separate `execute` calls means the per-statement overhead - not the actual
+    write - dominates ingest. Buffering them into one `executemany` per chunk
+    keeps the trail exactly as detailed while collapsing that overhead.
+    """
+    return (
+        event_id,
+        now_iso(),
+        stage,
+        summary,
+        json.dumps(detail, default=str) if detail else None,
+    )
+
+
+def audit_many(conn: sqlite3.Connection, rows: list[AuditRow]) -> None:
+    """Append buffered audit rows in a single statement."""
+    if rows:
+        conn.executemany(_AUDIT_SQL, rows)
+
+
 def audit(
     conn: sqlite3.Connection,
     event_id: str,
@@ -210,6 +255,9 @@ def audit(
 ) -> None:
     """Append one immutable step to the audit trail.
 
+    Convenience wrapper for single-event paths. Bulk callers should buffer with
+    `audit_row` and flush with `audit_many`.
+
     Args:
         conn: Open connection.
         event_id: Payment this step belongs to.
@@ -218,17 +266,7 @@ def audit(
         summary: One human-readable line.
         detail: Structured payload, stored as JSON.
     """
-    conn.execute(
-        "INSERT INTO audit_trail (event_id, timestamp, stage, summary, detail_json)"
-        " VALUES (?, ?, ?, ?, ?)",
-        (
-            event_id,
-            now_iso(),
-            stage,
-            summary,
-            json.dumps(detail, default=str) if detail else None,
-        ),
-    )
+    conn.execute(_AUDIT_SQL, audit_row(event_id, stage, summary, detail))
 
 
 def insert_event(conn: sqlite3.Connection, event: Any) -> None:
@@ -333,19 +371,23 @@ def insert_decision(
 
 
 def insert_execution(
-    conn: sqlite3.Connection, event_id: str, result: Any
+    conn: sqlite3.Connection,
+    event_id: str,
+    result: Any,
+    customer_id: str | None = None,
 ) -> None:
     """Persist an executed action. Idempotency key prevents double execution."""
     conn.execute(
         """
         INSERT OR IGNORE INTO executions (
-            event_id, executed_at, action, status, payment_link_url,
+            event_id, customer_id, executed_at, action, status, payment_link_url,
             payment_link_id, message_text, message_channel, scheduled_for,
             provider, error, idempotency_key
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
         (
             event_id,
+            customer_id,
             now_iso(),
             result.action.value,
             result.status,

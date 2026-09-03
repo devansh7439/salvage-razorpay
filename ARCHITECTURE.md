@@ -257,7 +257,75 @@ kind of thing that destroys credibility when a judge asks.
 
 ---
 
-## 8. Rejected alternatives
+## 8. Scaling
+
+The demo batch is 1,000 payments. A real merchant's is not, so the pipeline is
+built so that nothing in it scales with total input size.
+
+### Streaming, in bounded windows
+
+`process_batch` accepts any iterable and consumes it lazily, so events can come
+from a file, a queue, or a cursor without first building a list.
+
+```
+stream ──▶ window (4,096) ──▶ one inference call
+                 │
+                 └──▶ slice (500) ──▶ one write transaction
+```
+
+Peak memory is one window, regardless of whether the input is a thousand
+events or ten million. Measured: **8.9 MB at 10,000 events, 11.6 MB at
+50,000** — flat, as intended.
+
+### Two chunk sizes, because they bound different costs
+
+This is the non-obvious part. A **write transaction** wants to be *small*: it
+caps rollback scope, lock duration, and how much a failure destroys. An
+**inference call** wants to be *large*: the calibrated model is five
+cross-validated forests of 500 trees, and `predict_proba` pays about a second
+of fixed cost per call almost regardless of row count.
+
+| rows per inference call | cost |
+|---:|---:|
+| 500 | 1.10 ms/event |
+| 2,000 | 0.33 ms/event |
+| 4,000 | 0.25 ms/event |
+
+Using one knob for both cost roughly 4× throughput for no benefit. They are now
+`SCORING_WINDOW` and `CHUNK_SIZE` respectively.
+
+### Nothing per-chunk may scan a whole table
+
+The rule that matters at volume: work done *once per chunk* must not grow with
+the data already written, or total cost becomes quadratic in batch size.
+
+Three places violated it and were fixed:
+
+- **Contact-frequency guardrails** joined `executions` to `events` to reach
+  `customer_id`. That query grew linearly with the table and ran once per
+  chunk — 13 ms at 4,000 rows, 112 ms at 24,000. `customer_id` is now
+  denormalised onto `executions` with a covering index, making it a single
+  index lookup that stays flat.
+- **Decision lookups** for idempotency loaded every decision ever made. Now
+  scoped to the ids in the current chunk.
+- **Audit writes** issued six separate statements per payment, making
+  per-statement overhead rather than the write itself the dominant ingest cost.
+  Rows are buffered and flushed with one `executemany` per chunk. The trail is
+  unchanged; only the number of round trips is.
+
+### Query safety
+
+`limit` on the recovery queue is clamped server-side (500). `executions` is
+one-to-many with `events`, so the queue reaches the latest execution through a
+correlated subquery rather than a join — a direct join multiplied result rows
+per execution and silently inflated every count taken from it.
+
+`/api/evaluate` is cached until the next batch load, since its result is
+deterministic for a given batch: **1.29 s → 0.004 s**.
+
+---
+
+## 9. Rejected alternatives
 
 | Considered | Why not |
 |---|---|
