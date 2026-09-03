@@ -28,6 +28,27 @@ from salvage.taxonomy import classify
 
 MODEL_PATH = Path(__file__).resolve().parents[3] / "data" / "recovery_model.joblib"
 
+#: Failure classes the model is never trained on, because hard constraints
+#: resolve them before it is consulted. Kept here rather than in `train` so
+#: training and inference cannot disagree about the population.
+UNTRAINED_CLASSES: frozenset[str] = frozenset(
+    {"RISK_BLOCKED", "ALREADY_PAID", "MERCHANT_CONFIG", "UNKNOWN"}
+)
+
+#: Divisor used for those classes, roughly the mean payment-link effectiveness
+#: across the classes the model *was* trained on.
+#:
+#: The per-class divisor is correct for trained classes and meaningless for
+#: untrained ones - and actively dangerous for two of them, where the
+#: effectiveness is legitimately zero and the division explodes. Substituting a
+#: neutral constant keeps the propensity in a sane range for the one untrained
+#: class that still needs a number (MERCHANT_CONFIG, which is priced for
+#: escalation) without pretending to a precision that does not exist.
+NEUTRAL_REFERENCE_FIT = 0.63
+
+#: Below this, a divisor is treated as unusable rather than merely small.
+MIN_USABLE_FIT = 0.05
+
 _lock = threading.Lock()
 _bundle: dict[str, Any] | None = None
 
@@ -98,7 +119,15 @@ def predict_propensity_batch(events: list[Any]) -> list[float]:
             getattr(event, "error_source", None),
             getattr(event, "error_step", None),
         )
-        fit = effectiveness(classification.failure_class.value, reference)
-        out.append(float(min(1.0, max(0.0, p_reference / max(fit, 1e-6)))))
+        failure_class = classification.failure_class.value
+        fit = effectiveness(failure_class, reference)
+
+        # Untrained classes get a neutral divisor. Dividing by a genuinely zero
+        # effectiveness would send the propensity to its ceiling and inflate
+        # every expected value derived from it.
+        if failure_class in UNTRAINED_CLASSES or fit < MIN_USABLE_FIT:
+            fit = NEUTRAL_REFERENCE_FIT
+
+        out.append(float(min(1.0, max(0.0, p_reference / fit))))
 
     return out

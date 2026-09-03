@@ -321,3 +321,81 @@ them. This one was reasonable for unmodelled pairings and wrong for structural
 impossibilities, and only an explicitly stated invariant caught the difference —
 the bug was invisible in aggregate metrics, which is exactly where it was doing
 its damage.
+
+---
+
+## INC-007 — Fixing INC-006 broke inference in a different module
+**When:** 2026-09-04, Phase 6
+**Severity:** High — inflated every expected value on the dashboard
+
+**What broke.** After shipping the INC-005 incremental-value fix, the forecast
+error on the live dashboard had not moved at all:
+
+```
+expected_recoverable   Rs 9,73,092     <- policy forecast
+incremental_measured   Rs 7,00,059     <- oracle measured
+error                  +39.0%          <- identical to before the fix
+```
+
+An unchanged number after a fix that should have changed it is a stronger
+signal than a wrong number. The formula was not the problem.
+
+**Diagnosis.** Rather than reason about it, the predicted and true propensities
+were compared class by class:
+
+```
+MERCHANT_CONFIG  1.67x     AUTH_FAILURE        0.94x
+RISK_BLOCKED     1.62x     BANK_DOWNTIME       0.97x
+ALREADY_PAID     1.63x     INSTRUMENT_INVALID  0.93x
+UNKNOWN          1.70x     INSUFFICIENT_FUNDS  1.02x
+```
+
+The bias was entirely inside the four classes deliberately *excluded* from
+training. Everything the model was actually trained on was accurate to within
+7%. The model was never the problem either.
+
+**Root cause — and it was self-inflicted.** `predict_propensity` recovers
+intervention-independent propensity by dividing the model's output by the
+reference action's effectiveness:
+
+```python
+base = p_reference / max(effectiveness(failure_class, PAYMENT_LINK), 1e-6)
+```
+
+INC-006 had just set `RISK_BLOCKED` and `ALREADY_PAID` to effectiveness
+**zero** — correctly, for the oracle. But this division site, in a different
+module, then divided by `1e-6`. Propensity exploded and clipped at 1.0 for 84
+payments. `MERCHANT_CONFIG` and `UNKNOWN` had no effectiveness row either, so
+they divided by the 0.25 default and inflated fourfold.
+
+So a correct fix in `economics.py` silently broke a consumer in `ml/predict.py`
+that had been relying on the old permissive default. The `max(fit, 1e-6)` guard
+was the tell: it was written to prevent a crash, and what it actually did was
+convert a crash into a plausible-looking wrong number.
+
+**Fix.** `UNTRAINED_CLASSES` and a neutral divisor in `predict.py`. Classes the
+model was never trained on now use a constant roughly equal to the mean
+payment-link effectiveness across the trained population, rather than a
+per-class value that is meaningless or zero for them.
+
+```
+overall predicted/true   1.041 -> 0.981
+clipped at ceiling       84 events -> 10
+forecast error           +39.0% -> -9.9%
+```
+
+The residual −9.9% is the model's own slight conservatism, and it errs in the
+right direction: the system under-promises against what it then delivers.
+
+**Lesson applied.** Two lessons, and the second is the one that generalises.
+
+First: `max(x, 1e-6)` is not a guard, it is a way of turning a loud failure
+into a quiet one. Where a zero denominator means "this quantity is undefined
+here", the code should say so explicitly rather than substitute an
+infinitesimal and carry on.
+
+Second: the bug was found by comparing a forecast against a measurement, and it
+was only findable because the system produces both. A pipeline that reported
+only its own expected values would have had nothing to check itself against,
+and this error would have shipped — inflating the headline number by 39%, in
+the direction most likely to be believed and least likely to be questioned.
