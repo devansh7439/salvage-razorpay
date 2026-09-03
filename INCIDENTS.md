@@ -399,3 +399,38 @@ was only findable because the system produces both. A pipeline that reported
 only its own expected values would have had nothing to check itself against,
 and this error would have shipped — inflating the headline number by 39%, in
 the direction most likely to be believed and least likely to be questioned.
+
+---
+
+## INC-008 — A verified fix appeared to regress, because the server was stale
+**When:** 2026-09-04, final verification
+**Severity:** Low (no defect) — but it nearly caused a good fix to be reverted
+
+**What happened.** A full end-to-end run was executed to confirm the system
+before submission. The INC-007 forecast-error fix had been measured at −9.9% by
+a direct script run. Going through the live API, the same metric read:
+
+```
+forecast vs measured   Rs 973,092 vs Rs 700,059   (+39.0%)
+```
+
+Exactly the pre-fix number, to a tenth of a percent.
+
+**Root cause.** No defect. The `uvicorn` process had been started earlier in the
+session, *before* `ml/predict.py` was edited, and had the old module resident in
+memory. It was serving pre-fix bytecode. The CLI paths ran fresh interpreters
+and so picked up the fix; only the long-lived server did not.
+
+**Resolution.** Restarted the process. The metric read −9.9% immediately.
+
+**Why it is logged despite being no bug.** The obvious reading of that output
+was that the INC-007 fix had not worked, and the obvious next step would have
+been to go back and change working code. The tell was the number being
+*identical* to the pre-fix value rather than merely close — a real regression
+almost never lands on the old value to a tenth of a percent. That precision is
+the signature of stale state, not of broken logic.
+
+**Lesson applied.** Final verification runs against freshly started processes,
+never against ones that have been alive across edits. `--reload` is a
+development convenience, not a substitute for confirming what is actually
+loaded, and a long-lived server is a cache like any other.
