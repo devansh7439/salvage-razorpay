@@ -221,3 +221,103 @@ more honest than reporting an AUC that a reviewer has no way to interpret. It
 is also the safer posture: a suspiciously high AUC on synthetic data is
 evidence of leakage, not of quality, and we would rather be able to prove the
 absence of a leak than post an impressive number.
+
+---
+
+## INC-005 — The system measured incremental recovery but optimised gross
+**When:** 2026-09-03, Phase 5
+**Severity:** High — a coherence failure between the metric and the objective
+
+**What surfaced it.** Comparing two numbers from the live `/api/metrics`
+response on the same batch:
+
+```
+expected_recoverable_paise   Rs 9,73,091     <- what the policy engine forecast
+incremental_recovered_paise  Rs 7,00,059     <- what the oracle actually measured
+```
+
+A 39% overshoot, and consistent rather than noisy — the signature of a
+systematic modelling error rather than bad luck.
+
+**Root cause.** The oracle had been built to report *incremental* recovery, net
+of customers who would have returned unprompted. The policy engine had not: its
+expected value was
+
+```python
+net_ev = amount * P(recovery | action) * (1 - mdr) - cost
+```
+
+which is *gross*. The two components were answering different questions. The
+engine was buying gross recovery while the scoreboard paid out on incremental,
+so it would happily spend money messaging a customer whose bank was briefly
+down — someone who returns on their own about a third of the time — and book
+the arriving revenue as a win.
+
+**Why this is the more dangerous class of bug.** Nothing was broken. Every
+number was internally consistent, every test passed, and the dashboard looked
+healthy. The defect was that two halves of the system had been built to
+different definitions of value, and only comparing them side by side revealed
+it. Had the mismatch gone the other way — optimising incremental, reporting
+gross — it would have inflated the headline result instead of the forecast, and
+would have been far harder to notice because the error would have flattered us.
+
+**Fix.** Value the lift, not the outcome:
+
+```python
+lift   = max(0, P(recovery | action) - P(organic))
+net_ev = amount * lift * (1 - mdr) - cost
+```
+
+`ORGANIC_BASELINE` was added to `economics.py` as a merchant-side estimate —
+the kind any merchant can produce by holding out a no-contact cohort for a
+fortnight. It is deliberately separate from the oracle's own organic rates: the
+policy engine is not permitted to read ground truth, and the two are allowed to
+disagree, exactly as an estimate and reality do in production.
+
+The consequence is the behaviour we wanted all along. A bare notification on a
+bank-downtime failure now prices at **zero lift and negative net value**,
+because it is weaker than simply leaving the customer alone. The engine declines
+to send it.
+
+**Lesson applied.** Optimise the number you report. When the objective and the
+scoreboard come apart, the system will exploit the gap, and it will look like
+success while doing it.
+
+---
+
+## INC-006 — Fraud-blocked payments were recoverable in the simulation
+**When:** 2026-09-03, Phase 5
+**Severity:** Medium — corrupted the baseline comparison
+
+**What broke.** A test written to assert an obvious invariant failed:
+
+```
+FAILED test_risk_blocked_payments_never_recover
+  Outcome(recovered=True, recovered_paise=63500, p_action=0.091875)
+```
+
+**Root cause.** `ACTION_EFFECTIVENESS` had no row for `RISK_BLOCKED`, so lookups
+fell through to `DEFAULT_EFFECTIVENESS = 0.25`. A fraud-blocked payment
+therefore had a ~9% chance of "recovering" in the oracle. The default had been
+written as a conservative catch-all for unmodelled *combinations*; it was never
+meant to apply to classes that are unrecoverable by construction.
+
+**Why it mattered beyond tidiness.** The policy engine never acts on risk blocks
+— a hard constraint stops it long before economics — so Salvage was unaffected.
+But `blind_retry` acts on everything indiscriminately, which is the entire point
+of it as a baseline. It was being credited with revenue from payments that
+cannot be recovered at all, which made the baseline look better than it is.
+
+The bug was therefore biased *against* the thesis being argued, and fixing it
+moved the comparison in our favour: blind retry fell from Rs 3,79,808 to
+Rs 3,67,855 incremental. That direction is worth stating plainly — it is
+evidence the evaluation is not being tuned toward a flattering answer.
+
+**Fix.** `ZERO_EFFECTIVENESS_CLASSES` makes `RISK_BLOCKED` and `ALREADY_PAID`
+explicitly zero for every action, rather than inheriting a permissive default.
+
+**Lesson applied.** A default that is safe in one context is not safe in all of
+them. This one was reasonable for unmodelled pairings and wrong for structural
+impossibilities, and only an explicitly stated invariant caught the difference —
+the bug was invisible in aggregate metrics, which is exactly where it was doing
+its damage.

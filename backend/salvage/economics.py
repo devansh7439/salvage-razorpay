@@ -224,12 +224,64 @@ ACTION_EFFECTIVENESS: dict[str, dict[RecoveryAction, float]] = {
 #: an unmodelled combination should look unattractive, not free.
 DEFAULT_EFFECTIVENESS = 0.25
 
+#: Failure classes no intervention can recover, at any price.
+#:
+#: These must be explicit rather than falling through to DEFAULT_EFFECTIVENESS.
+#: A permissive default here does not merely mis-price an action - it credits
+#: strategies with revenue that cannot exist. Blind retry, which acts on
+#: everything indiscriminately, was being scored as recovering fraud-blocked
+#: payments, which flattered the baseline Salvage is measured against.
+ZERO_EFFECTIVENESS_CLASSES: frozenset[str] = frozenset(
+    {"RISK_BLOCKED", "ALREADY_PAID"}
+)
+
 
 def effectiveness(failure_class: str, action: RecoveryAction) -> float:
     """Structural fit between a failure mode and an intervention, in [0, 1]."""
+    if failure_class in ZERO_EFFECTIVENESS_CLASSES:
+        return 0.0
     return ACTION_EFFECTIVENESS.get(failure_class, {}).get(
         action, DEFAULT_EFFECTIVENESS
     )
+
+
+#: Share of customers who return and pay unprompted, per failure class.
+#:
+#: This is the merchant's own estimate, of the kind any merchant can produce by
+#: holding out a no-contact cohort for a fortnight and counting what comes back.
+#: It is not privileged knowledge - the simulator's oracle holds its own,
+#: separate truth, and the two are allowed to disagree. A production deployment
+#: would refit these from observed data.
+#:
+#: It exists because of a conflict that is easy to miss and expensive to keep:
+#: the system *measures* incremental recovery, net of what would have arrived
+#: anyway, but without this it would *optimise* gross recovery. Those come apart
+#: hardest exactly where organic return is high. A customer whose bank was down
+#: for an hour will very often just try again; paying to message them buys
+#: almost nothing, yet gross-value arithmetic scores it as a win because the
+#: money did in fact arrive.
+#:
+#: Optimising the same quantity that gets reported is the difference between a
+#: system that earns its spend and one that takes credit for the weather.
+ORGANIC_BASELINE: dict[str, float] = {
+    "BANK_DOWNTIME": 0.34,
+    "AUTH_FAILURE": 0.26,
+    "CUSTOMER_ABANDONED": 0.15,
+    "INSUFFICIENT_FUNDS": 0.14,
+    "LIMIT_EXCEEDED": 0.12,
+    "INSTRUMENT_INVALID": 0.05,
+    "MERCHANT_CONFIG": 0.0,
+    "RISK_BLOCKED": 0.0,
+    "ALREADY_PAID": 0.0,
+    "UNKNOWN": 0.10,
+}
+
+DEFAULT_ORGANIC_BASELINE = 0.10
+
+
+def organic_baseline(failure_class: str) -> float:
+    """Estimated share of customers who would return with no intervention."""
+    return ORGANIC_BASELINE.get(failure_class, DEFAULT_ORGANIC_BASELINE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -246,6 +298,8 @@ class Valuation:
     base_propensity: float
     effectiveness: float
     probability: float
+    organic_probability: float
+    lift: float
     gross_expected_paise: int
     mdr_paise: int
     cost_paise: int
@@ -256,9 +310,10 @@ class Valuation:
         rupees = lambda p: f"Rs {p / 100:,.2f}"  # noqa: E731
         return (
             f"{rupees(self.amount_paise)} x "
-            f"({self.base_propensity:.0%} propensity x "
-            f"{self.effectiveness:.0%} action fit = {self.probability:.1%}) "
-            f"= {rupees(self.gross_expected_paise)} gross, "
+            f"({self.probability:.1%} with this action "
+            f"- {self.organic_probability:.1%} who return anyway "
+            f"= {self.lift:.1%} lift) "
+            f"= {rupees(self.gross_expected_paise)} incremental, "
             f"less {rupees(self.mdr_paise)} MDR "
             f"and {rupees(self.cost_paise)} action cost "
             f"= {rupees(self.net_ev_paise)} net"
@@ -275,14 +330,23 @@ def value_action(
     """Compute the net expected value of taking one action.
 
         P(recovery | action) = base_propensity x effectiveness[class][action]
-        net EV = amount x P(recovery | action) x (1 - MDR) - action cost
+        P(organic)           = base_propensity x organic_baseline[class]
+        lift                 = max(0, P(recovery | action) - P(organic))
+        net EV               = amount x lift x (1 - MDR) - action cost
 
-    Two terms here do real work that a simpler formula would lose.
+    Three terms here do real work that a simpler formula would lose.
 
     The **effectiveness** factor makes the probability action-conditional.
     Without it every action shares one probability, the ranking silently
     collapses to whichever intervention is cheapest, and the engine will
     cheerfully notify a customer that their expired card expired.
+
+    The **lift** term is what makes this an incremental calculation rather than
+    a gross one. Value is only created where the intervention changes the
+    outcome; a customer who would have returned on their own generates revenue
+    the system did not cause and may not bill for. An action that cannot beat
+    the organic baseline scores zero lift and is correctly rejected, however
+    much money happens to arrive afterwards.
 
     The **MDR** term keeps the rupee figures honest. Gross expected recovery is
     what most recovery dashboards report, but the merchant never banks it - the
@@ -311,8 +375,13 @@ def value_action(
 
     fit = effectiveness(failure_class, action)
     probability = base_propensity * fit
+    p_organic = base_propensity * organic_baseline(failure_class)
 
-    gross = round(amount_paise * probability)
+    # Only the lift is earned. Clamped at zero because an action weaker than
+    # doing nothing does not destroy revenue, it simply creates none.
+    lift = max(0.0, probability - p_organic)
+
+    gross = round(amount_paise * lift)
     mdr = round(gross * policy.mdr_rate)
     cost = ACTION_COSTS[action].total_paise
     net = gross - mdr - cost
@@ -323,6 +392,8 @@ def value_action(
         base_propensity=base_propensity,
         effectiveness=fit,
         probability=probability,
+        organic_probability=p_organic,
+        lift=lift,
         gross_expected_paise=gross,
         mdr_paise=mdr,
         cost_paise=cost,
