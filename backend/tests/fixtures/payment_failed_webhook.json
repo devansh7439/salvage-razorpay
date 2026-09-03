@@ -1,0 +1,47 @@
+{
+  "entity": "event",
+  "account_id": "acc_BFQ7uQEaa7j2z6",
+  "event": "payment.failed",
+  "contains": ["payment"],
+  "payload": {
+    "payment": {
+      "entity": {
+        "id": "pay_29QQoUBi66xm2f",
+        "entity": "payment",
+        "amount": 100000,
+        "currency": "INR",
+        "status": "failed",
+        "order_id": "order_9A33XWu170gUtm",
+        "invoice_id": null,
+        "international": false,
+        "method": "card",
+        "amount_refunded": 0,
+        "refund_status": null,
+        "captured": false,
+        "description": "Purchase Description",
+        "card_id": "card_KOdY30ajbuyOYN",
+        "bank": null,
+        "wallet": null,
+        "vpa": null,
+        "email": "gaurav.kumar@example.com",
+        "contact": "+919000090000",
+        "customer_id": "cust_K6fNE0WJZWGqtN",
+        "notes": {
+          "name": "Gaurav Kumar"
+        },
+        "fee": null,
+        "tax": null,
+        "error_code": "BAD_REQUEST_ERROR",
+        "error_description": "Payment failed because the card has expired.",
+        "error_source": "customer",
+        "error_step": "payment_authorization",
+        "error_reason": "card_expired",
+        "acquirer_data": {
+          "auth_code": null
+        },
+        "created_at": 1757000000
+      }
+    }
+  },
+  "created_at": 1757000001
+}

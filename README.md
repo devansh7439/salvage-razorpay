@@ -35,7 +35,31 @@ unresolved exceptions                        50
 
 Most recovery tools would report **₹11.1L**. Salvage reports **₹7.0L**, because
 some customers come back on their own and billing for them is not recovery.
-See [Honest accounting](#honest-accounting).
+
+---
+
+## How to read these numbers
+
+Three figures here are deliberately smaller than the ones a recovery dashboard
+usually shows. Each is the correct call, and each reads as a weakness if
+nobody explains it — so, plainly:
+
+**1. Recovery is incremental, not gross — ₹7.0L, not ₹11.1L.**
+₹4.1L of that gross figure came from customers who would have returned
+unprompted; for a bank outage, about a third do. Salvage subtracts them and
+claims only what it caused. It also *optimises* that same number, so it will
+not spend money nudging someone already on their way back.
+
+**2. AUC 0.575 is not a coin flip — the ceiling is 0.629.**
+Recovery outcomes are Bernoulli draws, so no model can exceed the Bayes rate.
+We measured that ceiling by scoring the oracle's *true* probabilities against
+realised labels. The attainable range is 0.5 → 0.629, not 0.5 → 1.0, and 0.575
+is **58% of the signal that exists**. Calibration is within ~1 point across the
+buckets holding 90% of volume. A near-perfect score here would be evidence of
+leakage, not quality.
+
+**3. The taxonomy is real; only the volume is synthetic.**
+See [Data provenance](#data-provenance) — the split matters and is testable.
 
 ---
 
@@ -136,6 +160,49 @@ be evidence of leakage, not quality ([INC-004](INCIDENTS.md)).
 unresolved — mostly Razorpay's generic `payment_failed`, which carries no
 recovery signal. The system declines to guess an intervention on a failure it
 cannot diagnose.
+
+---
+
+## Data provenance
+
+"It's synthetic" is too blunt a caveat, because most of this system is not.
+What is real and what is simulated is a precise, testable split:
+
+| Component | Source | Verified by |
+|---|---|---|
+| Failure taxonomy (48 `error_reason` values) | Razorpay's published docs | `test_taxonomy_and_oracle.py` |
+| `error_source` → action guidance | Razorpay's published docs | quoted in `taxonomy.py` |
+| `payment.failed` webhook contract | Razorpay's documented payload | `test_webhook_contract.py` |
+| Payment Links request payload | Razorpay Payment Links API | `test_webhook_contract.py` |
+| Webhook signature (HMAC-SHA256) | real algorithm, real rejection | `test_webhook_contract.py` |
+| **Event volume and outcomes** | **synthetic** | `simulator/` |
+
+`backend/tests/fixtures/payment_failed_webhook.json` is a real Razorpay
+envelope — correct nesting, field names, integer paise, the full five-field
+error object. It is driven end to end through the pipeline in tests and comes
+out as `INSTRUMENT_INVALID → PAYMENT_LINK` with a five-stage audit trail.
+
+The signature tests are worth singling out because they are genuinely live: a
+forged signature and a tampered body are both rejected by real HMAC-SHA256,
+with no credentials and no network.
+
+Only the last row is simulated — and the generator is built specifically so the
+model cannot memorise it (latent drivers it never sees, noisy proxies,
+irreducible Bernoulli noise, and a measured Bayes ceiling to check against).
+
+### Proving the live path
+
+Fixture mode keeps the demo immune to a flaky network, but "we integrated with
+Razorpay" is only credible if the live path has run at least once:
+
+```bash
+python -m salvage.verify_live
+```
+
+It creates a **real Test Mode Payment Link**, generates a **real model-written
+Hinglish message**, exercises signature enforcement, and writes a receipt to
+`data/live_verification.txt`. Anything unconfigured reports `SKIPPED` rather
+than quietly passing. Signature enforcement passes with no credentials at all.
 
 ---
 

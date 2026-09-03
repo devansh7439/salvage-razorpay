@@ -1,0 +1,47 @@
+====================================================================
+  SALVAGE - LIVE INTEGRATION VERIFICATION
+====================================================================
+  2026-09-03T20:21:22+00:00
+
+  razorpay   fixture
+  llm        template
+
+--------------------------------------------------------------------
+  1. RAZORPAY PAYMENT LINKS
+--------------------------------------------------------------------
+  SKIPPED - no credentials.
+    Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in .env
+    (Test Mode keys: dashboard.razorpay.com -> Settings -> API Keys)
+
+--------------------------------------------------------------------
+  2. RECOVERY MESSAGE GENERATION
+--------------------------------------------------------------------
+  SKIPPED - no credentials.
+    Set LLM_BASE_URL and LLM_API_KEY in .env
+    Any OpenAI-compatible endpoint works (Groq, OpenRouter, ...)
+
+  Template fallback currently produces:
+    "Hi Gaurav, aapka Rs 10 ka payment nahi ho paya kyunki aapka card is payment ke liye kaam nahi kar raha. Koi baat nahi, yahan se dobara try kar lijiye: https://rzp.io/i/example"
+
+--------------------------------------------------------------------
+  3. WEBHOOK SIGNATURE ENFORCEMENT
+--------------------------------------------------------------------
+  Using a local secret for the demonstration, since
+  RAZORPAY_WEBHOOK_SECRET is not set.
+  genuine signature accepted   True
+  forged signature rejected    True
+
+  Real HMAC-SHA256 over the raw body, constant-time compared.
+  Without it, anyone who learns the endpoint URL could post fabricated
+  failures and make the system issue links to numbers of their choosing.
+
+====================================================================
+  SUMMARY
+====================================================================
+  Razorpay Payment Link (live)   SKIPPED / no keys
+  Model-written message (live)   SKIPPED / no keys
+  Webhook signature enforcement  PASS
+
+  Add the missing credentials to .env and re-run.
+  Everything else in Salvage runs without them.
+

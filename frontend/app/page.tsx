@@ -19,6 +19,7 @@ import {
 } from "@/lib/format";
 import { Badge, MetricCard } from "@/components/MetricCard";
 import { DecisionInspector } from "@/components/DecisionInspector";
+import { HonestyBand, IntegrationNotice } from "@/components/Explainer";
 
 type Tab = "queue" | "evaluation" | "exceptions";
 
@@ -44,6 +45,13 @@ export default function Dashboard() {
       setMetrics(m);
       setRows(e.events);
       setError(null);
+      // Fetched eagerly rather than on tab switch: the explainer above the
+      // tabs needs the model's ceiling figures, and it has to be on screen
+      // when the dashboard opens. A reviewer who never clicks "Evaluation"
+      // would otherwise see an AUC-free page and, worse, a recovery number
+      // with no explanation of why it is deliberately smaller.
+      // The endpoint is cached server-side, so this costs ~4ms.
+      api.evaluate().then(setEvaluation).catch(() => {});
     } catch {
       setError("Cannot reach the API. Start it with: uvicorn salvage.main:app --port 8099");
     }
@@ -172,6 +180,33 @@ export default function Dashboard() {
             )}
           </div>
         </>
+      )}
+
+      {/* Above the tabs, not inside one. Every number on the command centre
+          is deliberately smaller than its conventional equivalent, so the
+          explanation has to be on screen at the same time as the numbers -
+          not one click away in a tab a reviewer may never open. */}
+      {evaluation && (
+        <div className="mt-6 space-y-4">
+          <HonestyBand
+            gross={rupeesCompact(evaluation.strategies.salvage.gross_recovered_paise)}
+            incremental={rupeesCompact(
+              evaluation.strategies.salvage.incremental_recovered_paise
+            )}
+            organic={rupeesCompact(
+              evaluation.strategies.salvage.organic_recovered_paise
+            )}
+            aucModel={evaluation.model?.roc_auc}
+            aucCeiling={evaluation.model?.oracle_auc}
+            signalPct={evaluation.model?.signal_captured_pct}
+          />
+          {health && (
+            <IntegrationNotice
+              razorpayMode={health.razorpay_mode}
+              llmMode={health.llm_mode}
+            />
+          )}
+        </div>
       )}
 
       {/* Tabs */}
@@ -369,31 +404,51 @@ function EvaluationView({ data }: { data: Evaluation | null }) {
           </dl>
         </div>
 
+        {/* Leads with signal captured, not AUC. A reviewer skimming for thirty
+            seconds should see the interpretable number first - 0.575 on its own
+            reads as a coin flip and buries the actual result. */}
         {data.model && (
           <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
             <h3 className="text-[11px] font-semibold uppercase tracking-widest text-slate-500">
-              Model, against the attainable ceiling
+              Model quality
             </h3>
-            <dl className="mt-4 space-y-2.5 text-sm">
-              <Row label="ROC AUC" value={data.model.roc_auc.toFixed(4)} />
-              <Row
-                label="Ceiling (knowing true p)"
-                value={data.model.oracle_auc.toFixed(4)}
+            <div className="num mt-3 text-3xl font-semibold text-emerald-300">
+              {data.model.signal_captured_pct}%
+            </div>
+            <p className="text-xs text-slate-400">
+              of the signal that exists in this problem
+            </p>
+
+            <div className="mt-4 space-y-2">
+              <CeilingBar
+                label="Salvage"
+                value={data.model.roc_auc}
+                ceiling={data.model.oracle_auc}
+                accent
               />
-              <Row
-                label="Signal captured"
-                value={`${data.model.signal_captured_pct}%`}
-                good
+              <CeilingBar
+                label="Perfect knowledge"
+                value={data.model.oracle_auc}
+                ceiling={data.model.oracle_auc}
               />
+              <CeilingBar label="Coin flip" value={0.5} ceiling={data.model.oracle_auc} />
+            </div>
+
+            <dl className="mt-4 space-y-2 border-t border-slate-800 pt-3 text-sm">
               <Row label="Brier score" value={data.model.brier.toFixed(4)} />
               <Row
                 label="Irreducible floor"
                 value={data.model.oracle_brier.toFixed(4)}
               />
+              <Row
+                label="Held-out customers"
+                value={count(data.model.n_test)}
+              />
             </dl>
             <p className="mt-3 text-[11px] leading-relaxed text-slate-500">
-              Outcomes are Bernoulli draws, so no model can exceed the ceiling.
-              A near-perfect score here would indicate leakage, not quality.
+              Outcomes are Bernoulli draws, so the attainable range is 0.5 to{" "}
+              {data.model.oracle_auc.toFixed(3)} — not 0.5 to 1.0. A
+              near-perfect score here would be evidence of leakage, not quality.
             </p>
           </div>
         )}
@@ -513,6 +568,44 @@ function ExceptionsView({
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Renders an AUC against the attainable ceiling rather than against 1.0.
+ *
+ * Scaling the bar to the ceiling is the whole point: on a 0-1 axis every bar
+ * here looks equally mediocre, which is precisely the misreading to avoid.
+ */
+function CeilingBar({
+  label,
+  value,
+  ceiling,
+  accent,
+}: {
+  label: string;
+  value: number;
+  ceiling: number;
+  accent?: boolean;
+}) {
+  const span = Math.max(ceiling - 0.5, 1e-6);
+  const pct = Math.max(0, Math.min(100, ((value - 0.5) / span) * 100));
+
+  return (
+    <div className="flex items-center gap-3 text-xs">
+      <span className="w-32 shrink-0 text-slate-500">{label}</span>
+      <div className="relative h-4 flex-1 overflow-hidden rounded bg-slate-950">
+        <div
+          className={`absolute inset-y-0 left-0 ${
+            accent ? "bg-emerald-500/50" : "bg-slate-700/60"
+          }`}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <span className="num w-14 shrink-0 text-right font-mono text-slate-400">
+        {value.toFixed(3)}
+      </span>
     </div>
   );
 }
