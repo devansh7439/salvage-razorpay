@@ -66,3 +66,78 @@ later:
 depends on it cost four minutes and removed the single largest schedule risk in
 the project. It also caught an SDK major-version drift that would otherwise have
 surfaced as a confusing runtime error during integration.
+
+---
+
+## INC-003 — Policy engine ranked interventions by cost, not by fitness
+**When:** 2026-09-03, Phase 2
+**Severity:** High — wrong decisions, and wrong in a way that looked right
+
+**What broke.** The first smoke test of the policy engine produced two
+decisions that are backwards to anyone who knows payments:
+
+```
+bank downtime, p=0.72   -> PAYMENT_LINK   (should be a retry)
+expired card,  p=0.65   -> NOTIFY         (should be a payment link)
+```
+
+Telling a customer their expired card expired, without giving them a way to pay
+with a different one, is the single least useful thing the system could do.
+
+**Root cause.** `value_action` applied *one* probability to every candidate
+action:
+
+```python
+net_ev = amount * probability * (1 - mdr) - action_cost
+```
+
+With `probability` identical across actions, the amount and MDR terms are also
+identical, so the ranking reduces to `-action_cost`. The engine was not choosing
+the best intervention at all — it was choosing the cheapest one, every time, and
+the ordering of `ACTION_COSTS` was silently deciding all policy. NOTIFY (175
+paise) beat PAYMENT_LINK (185) beat RETRY (200), which is exactly the sequence
+the bad output showed.
+
+**Why it was dangerous rather than merely wrong.** The system still produced a
+decision for every payment, with a plausible rupee figure attached and a
+confident rationale string. Nothing errored. On a dashboard it would have looked
+entirely healthy, and the arithmetic shown in the inspector would have been
+internally consistent — just answering the wrong question.
+
+**The modelling error underneath.** P(recovery) was being treated as a property
+of a payment. It is a property of a payment *and an intervention together*.
+Retrying a bank-outage failure works most of the time; retrying an expired card
+works never. A single scalar per payment cannot represent that, so no amount of
+model tuning would have fixed it.
+
+**Fix.** Split the probability into two factors with different owners:
+
+```python
+P(recovery | action) = base_propensity x effectiveness[failure_class][action]
+```
+
+- `base_propensity` stays with the ML model — the customer's underlying
+  willingness and ability to pay, learned from amount, history and context.
+- `effectiveness` is a documented, human-authored matrix in `economics.py`
+  giving the structural fit between each failure mode and each remedy.
+
+Keeping them separate is deliberate: the learned part stays learnable, and the
+part that encodes domain truth stays inspectable and arguable. A reviewer can
+disagree with the claim that a scheduled retry beats an immediate one for bank
+downtime, because that claim is a number in a table with a comment next to it,
+not a weight inside a forest.
+
+**After the fix.**
+
+```
+bank downtime    -> RETRY_SCHEDULED  (considered RETRY_NOW, PAYMENT_LINK)
+expired card     -> PAYMENT_LINK     (NOTIFY priced 3.4x lower)
+razorpay 5xx     -> RETRY_SCHEDULED
+Rs 8 payment     -> DROP             (NOTIFY prices at negative net EV)
+```
+
+**Lesson applied.** The bug was invisible in the code and obvious in the output
+— it took a smoke test printing *every considered alternative*, not just the
+winner, to see it. The `considered` field was added to `PolicyDecision` for
+debugging and then kept permanently: it is now what the dashboard's decision
+inspector renders, so the same visibility that caught this is what a judge sees.
