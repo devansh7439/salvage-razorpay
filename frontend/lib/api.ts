@@ -2,9 +2,24 @@
 
 const BASE = process.env.NEXT_PUBLIC_API ?? "http://127.0.0.1:8099";
 
+/**
+ * Live merchant controls. Mirrors Razorpay's own named autonomy limits:
+ * review-first mode and an immediate kill switch.
+ */
+export interface AgentControls {
+  enabled: boolean;
+  mode: "review_first" | "autonomous";
+  status: "disabled" | "review_first" | "autonomous";
+  executes: boolean;
+  disabled_reason: string | null;
+  changed_at: string;
+  changed_by: string;
+}
+
 export interface Health {
   status: string;
   model_loaded: boolean;
+  agent: AgentControls;
   razorpay_mode: string;
   llm_mode: string;
   webhook_signature_enforced: boolean;
@@ -166,6 +181,26 @@ export const api = {
   load: async () => {
     const res = await fetch(`${BASE}/api/simulate/load`, { method: "POST" });
     if (!res.ok) throw new Error(`load -> ${res.status}`);
+    return res.json();
+  },
+
+  controls: () => get<AgentControls>("/api/controls"),
+
+  /** Change agent authority at runtime. Takes effect without a restart. */
+  setControls: async (opts: {
+    enabled?: boolean;
+    mode?: "review_first" | "autonomous";
+    reason?: string;
+  }): Promise<AgentControls> => {
+    const params = new URLSearchParams();
+    if (opts.enabled !== undefined) params.set("enabled", String(opts.enabled));
+    if (opts.mode) params.set("mode", opts.mode);
+    if (opts.reason) params.set("reason", opts.reason);
+
+    const res = await fetch(`${BASE}/api/controls?${params}`, {
+      method: "POST",
+    });
+    if (!res.ok) throw new Error(`controls -> ${res.status}`);
     return res.json();
   },
 };

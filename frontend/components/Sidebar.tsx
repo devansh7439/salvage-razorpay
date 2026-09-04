@@ -1,5 +1,7 @@
 import { Icon } from "./ui";
 import { rupeesCompact } from "@/lib/format";
+import { AgentControls } from "@/lib/api";
+import { AgentControlPanel } from "./AgentControlPanel";
 
 /**
  * Left navigation, grouped by what a reviewer is trying to do rather than by
@@ -42,6 +44,8 @@ export function Sidebar({
   exceptions,
   busy,
   onRun,
+  controls,
+  onControlChange,
 }: {
   view: View;
   onSelect: (v: View) => void;
@@ -50,6 +54,12 @@ export function Sidebar({
   exceptions: number;
   busy: boolean;
   onRun: () => void;
+  controls: AgentControls | null;
+  onControlChange: (o: {
+    enabled?: boolean;
+    mode?: "review_first" | "autonomous";
+    reason?: string;
+  }) => void;
 }) {
   const pct = atRisk > 0 ? Math.min(100, (recovered / atRisk) * 100) : 0;
 
@@ -121,8 +131,16 @@ export function Sidebar({
         </div>
       </div>
 
+      <div className="m-3 mb-0">
+        <AgentControlPanel
+          controls={controls}
+          onChange={onControlChange}
+          busy={busy}
+        />
+      </div>
+
       {/* The one number that answers "did this work?", without navigating. */}
-      <div className="m-3 mt-0 rounded-xl border border-[var(--border)] bg-[#fbfbfc] p-4">
+      <div className="m-3 mt-3 rounded-xl border border-[var(--border)] bg-[#fbfbfc] p-4">
         <div className="flex items-center justify-between">
           <span className="flex items-center gap-1.5 text-[12px] text-[var(--muted)]">
             <Icon name="sparkle" className="h-3.5 w-3.5" />

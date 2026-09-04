@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  AgentControls,
   api,
   Evaluation,
   ExceptionReport,
@@ -40,6 +41,7 @@ export default function Dashboard() {
   const [view, setView] = useState<View>("command");
   const [filter, setFilter] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [agent, setAgent] = useState<AgentControls | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -51,6 +53,7 @@ export default function Dashboard() {
         api.events(300),
       ]);
       setHealth(h);
+      setAgent(h.agent ?? null);
       setMetrics(m);
       setRows(e.events);
       setError(null);
@@ -69,6 +72,20 @@ export default function Dashboard() {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  const changeControls = async (opts: {
+    enabled?: boolean;
+    mode?: "review_first" | "autonomous";
+    reason?: string;
+  }) => {
+    // Optimistic is wrong here: a kill switch must reflect what the server
+    // actually did, not what the click intended.
+    try {
+      setAgent(await api.setControls(opts));
+    } catch {
+      /* leave the previous state visible rather than showing a false one */
+    }
+  };
 
   const runBatch = async () => {
     setBusy(true);
@@ -129,6 +146,8 @@ export default function Dashboard() {
         exceptions={metrics?.exceptions ?? 0}
         busy={busy}
         onRun={runBatch}
+        controls={agent}
+        onControlChange={changeControls}
       />
 
       <main className="min-w-0 flex-1 overflow-x-hidden">
