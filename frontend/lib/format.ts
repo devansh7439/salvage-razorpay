@@ -38,28 +38,31 @@ export function count(n: number | null | undefined): string {
 }
 
 /**
- * Colour per action. Red is reserved for DROP, which is the one that most
- * needs to read as deliberate rather than as a failure - a DROP is the system
- * declining to waste money, not an error.
+ * Colour per action, tuned for a light surface.
+ *
+ * Kept deliberately desaturated. On a page this quiet, a fully saturated badge
+ * pulls the eye away from the numbers, which are the point. DROP is the one
+ * case that gets a warm tint - not because it is an error, but because "we
+ * chose to spend nothing here" is the decision most worth noticing.
  */
 export const ACTION_STYLE: Record<string, string> = {
-  PAYMENT_LINK: "bg-emerald-500/15 text-emerald-300 ring-emerald-500/30",
-  RETRY_SCHEDULED: "bg-amber-500/15 text-amber-300 ring-amber-500/30",
-  RETRY_NOW: "bg-amber-500/15 text-amber-300 ring-amber-500/30",
-  NOTIFY: "bg-sky-500/15 text-sky-300 ring-sky-500/30",
-  ESCALATE: "bg-violet-500/15 text-violet-300 ring-violet-500/30",
-  DROP: "bg-rose-500/15 text-rose-300 ring-rose-500/30",
+  PAYMENT_LINK: "bg-emerald-50 text-emerald-700 ring-emerald-200",
+  RETRY_SCHEDULED: "bg-amber-50 text-amber-700 ring-amber-200",
+  RETRY_NOW: "bg-amber-50 text-amber-700 ring-amber-200",
+  NOTIFY: "bg-sky-50 text-sky-700 ring-sky-200",
+  ESCALATE: "bg-violet-50 text-violet-700 ring-violet-200",
+  DROP: "bg-rose-50 text-rose-700 ring-rose-200",
 };
 
 export const CLASS_STYLE: Record<string, string> = {
-  BANK_DOWNTIME: "text-amber-300",
-  INSUFFICIENT_FUNDS: "text-orange-300",
-  INSTRUMENT_INVALID: "text-emerald-300",
-  AUTH_FAILURE: "text-sky-300",
-  CUSTOMER_ABANDONED: "text-cyan-300",
-  LIMIT_EXCEEDED: "text-yellow-300",
-  RISK_BLOCKED: "text-rose-300",
-  MERCHANT_CONFIG: "text-violet-300",
-  ALREADY_PAID: "text-slate-400",
-  UNKNOWN: "text-slate-400",
+  BANK_DOWNTIME: "text-amber-700",
+  INSUFFICIENT_FUNDS: "text-orange-700",
+  INSTRUMENT_INVALID: "text-emerald-700",
+  AUTH_FAILURE: "text-sky-700",
+  CUSTOMER_ABANDONED: "text-cyan-700",
+  LIMIT_EXCEEDED: "text-yellow-700",
+  RISK_BLOCKED: "text-rose-700",
+  MERCHANT_CONFIG: "text-violet-700",
+  ALREADY_PAID: "text-zinc-500",
+  UNKNOWN: "text-zinc-500",
 };

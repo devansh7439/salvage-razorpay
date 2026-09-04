@@ -2,19 +2,56 @@
 @tailwind components;
 @tailwind utilities;
 
-:root { color-scheme: dark; }
+/*
+ * Light, low-chrome palette. Nearly all separation comes from whitespace and
+ * hairline borders rather than fills, so the data is the only thing with
+ * visual weight on the page.
+ */
+:root {
+  color-scheme: light;
 
-body {
-  background: #070b14;
-  color: #e2e8f0;
-  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  --canvas: #f6f6f7;
+  --surface: #ffffff;
+  --border: #ebebed;
+  --border-strong: #e0e0e3;
+
+  --text: #18181b;
+  --muted: #71717a;
+  --faint: #a1a1aa;
+
+  --ink: #09090b;
 }
 
-/* Tabular figures everywhere money appears, so columns align and a reader can
-   compare magnitudes down a column without re-reading each row. */
-.num { font-variant-numeric: tabular-nums; }
+body {
+  background: var(--canvas);
+  color: var(--text);
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  -webkit-font-smoothing: antialiased;
+}
 
-::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 6px; }
-::-webkit-scrollbar-thumb:hover { background: #334155; }
+/* Tabular figures everywhere money appears, so columns align and magnitudes
+   can be compared down a column without re-reading each row. */
+.num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Dashed row separators: present enough to guide the eye across a wide row,
+   quiet enough not to compete with the values. */
+.row-sep {
+  border-bottom: 1px dashed var(--border-strong);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #dcdce0;
+  border-radius: 6px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #c9c9cf;
+}

@@ -4,39 +4,41 @@ import { ReactNode } from "react";
  * A headline figure with its supporting context.
  *
  * `note` exists because every number on this dashboard has a caveat that
- * matters. A recovery figure without its organic baseline stated is misleading,
- * so the caveat is part of the component rather than something a viewer has to
- * go looking for.
+ * matters. A recovery figure without its organic baseline stated is
+ * misleading, so the caveat is part of the component rather than something a
+ * viewer has to go looking for.
  */
 export function MetricCard({
   label,
   value,
   note,
-  accent = "slate",
+  accent = "ink",
 }: {
   label: string;
   value: ReactNode;
   note?: ReactNode;
-  accent?: "slate" | "emerald" | "amber" | "rose" | "sky";
+  accent?: "ink" | "emerald" | "amber" | "rose" | "sky";
 }) {
   const accents: Record<string, string> = {
-    slate: "text-slate-100",
-    emerald: "text-emerald-300",
-    amber: "text-amber-300",
-    rose: "text-rose-300",
-    sky: "text-sky-300",
+    ink: "text-[var(--ink)]",
+    emerald: "text-emerald-700",
+    amber: "text-amber-700",
+    rose: "text-rose-700",
+    sky: "text-sky-700",
   };
 
   return (
-    <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
-      <div className="text-[11px] font-medium uppercase tracking-widest text-slate-500">
+    <div className="rounded-xl border border-[var(--border)] bg-white p-5">
+      <div className="text-[11px] font-medium uppercase tracking-[0.1em] text-[var(--faint)]">
         {label}
       </div>
-      <div className={`num mt-2 text-3xl font-semibold ${accents[accent]}`}>
+      <div className={`num mt-2 text-[28px] font-semibold ${accents[accent]}`}>
         {value}
       </div>
       {note && (
-        <div className="mt-2 text-xs leading-relaxed text-slate-500">{note}</div>
+        <div className="mt-2 text-[11px] leading-relaxed text-[var(--muted)]">
+          {note}
+        </div>
       )}
     </div>
   );
