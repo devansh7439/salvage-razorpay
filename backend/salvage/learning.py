@@ -159,9 +159,11 @@ def check_assumptions() -> list[AssumptionCheck]:
         material = assumed > 0 and abs(observed - assumed) / assumed >= DRIFT_THRESHOLD
         drifted = sufficient and outside and material
 
+        plural = "observation" if n == 1 else "observations"
+
         if not sufficient:
             recommendation = (
-                f"Only {n} observations - too few to judge. Interval "
+                f"Only {n} {plural} - too few to judge. Interval "
                 f"[{lo:.2f}, {hi:.2f}] contains almost anything."
             )
         elif drifted:
@@ -174,7 +176,7 @@ def check_assumptions() -> list[AssumptionCheck]:
             )
         else:
             recommendation = (
-                f"Consistent with {n} observations - interval "
+                f"Consistent with {n} {plural} - interval "
                 f"[{lo:.2f}, {hi:.2f}] contains the assumption."
             )
 

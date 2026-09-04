@@ -7,6 +7,7 @@ import {
   Evaluation,
   ExceptionReport,
   Health,
+  Learning,
   Metrics,
   QueueRow,
 } from "@/lib/api";
@@ -21,6 +22,7 @@ import {
 import { Badge, MetricCard } from "@/components/MetricCard";
 import { DecisionInspector } from "@/components/DecisionInspector";
 import { HonestyBand, IntegrationNotice } from "@/components/Explainer";
+import { LearningView } from "@/components/LearningView";
 import { Sidebar, View } from "@/components/Sidebar";
 import { Card, Icon, IconButton, Pill, Th } from "@/components/ui";
 
@@ -37,6 +39,7 @@ export default function Dashboard() {
   const [rows, setRows] = useState<QueueRow[]>([]);
   const [evaluation, setEvaluation] = useState<Evaluation | null>(null);
   const [exceptions, setExceptions] = useState<ExceptionReport | null>(null);
+  const [learning, setLearning] = useState<Learning | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [view, setView] = useState<View>("command");
   const [filter, setFilter] = useState<string | null>(null);
@@ -73,6 +76,14 @@ export default function Dashboard() {
     refresh();
   }, [refresh]);
 
+  // Fetched on navigation rather than eagerly, unlike evaluation: nothing
+  // outside this view reads it, and the report scans every decision joined
+  // to its outcome. Cheap on the demo batch, not free on a real one.
+  useEffect(() => {
+    if (view !== "learning" || learning) return;
+    api.learning().then(setLearning).catch(() => {});
+  }, [view, learning]);
+
   const changeControls = async (opts: {
     enabled?: boolean;
     mode?: "review_first" | "autonomous";
@@ -93,6 +104,7 @@ export default function Dashboard() {
       await api.load();
       setEvaluation(null);
       setExceptions(null);
+      setLearning(null);
       await refresh();
     } finally {
       setBusy(false);
@@ -125,6 +137,10 @@ export default function Dashboard() {
     evaluation: {
       title: "Evaluation",
       sub: "Measured against doing nothing and against retrying everything.",
+    },
+    learning: {
+      title: "Learning",
+      sub: "The system's own economic assumptions, audited against what happened.",
     },
     exceptions: {
       title: "Exceptions",
@@ -188,6 +204,8 @@ export default function Dashboard() {
           )}
 
           {view === "evaluation" && <EvaluationView data={evaluation} />}
+
+          {view === "learning" && <LearningView data={learning} />}
 
           {view === "exceptions" && (
             <ExceptionsView data={exceptions} onSelect={setSelected} />

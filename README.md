@@ -262,7 +262,9 @@ payment.failed webhook  (HMAC-SHA256 verified against raw body)
         │
         ▼
   DIAGNOSE ── taxonomy.py ──── 48 documented Razorpay reasons
-        │                      undiagnosable → exception list, never guessed
+        │      └─ diagnosis.py ──── LLM reads bank prose where rules gave up;
+        │                           six proposable classes, 0.70 floor,
+        │                           quarter autonomy — else stays an exception
         ▼
    SCORE ──── ml/predict.py ── calibrated propensity, customer-level split
         │
@@ -274,8 +276,15 @@ payment.failed webhook  (HMAC-SHA256 verified against raw body)
  EXECUTE ──── executor.py ──── Razorpay Payment Link · Hinglish nudge
         │                      scheduled retry · ops escalation
         ▼
-   AUDIT ──── db.py ────────── append-only, six rows per payment
+   AUDIT ──── db.py ────────── append-only, one row per stage per payment
         │
+        ▼
+  VERIFY ──── verification.py ─ settlement webhooks + a reconcile poll;
+        │                       a settled payment is never actioned again
+        ▼
+   LEARN ──── learning.py ───── every effectiveness constant audited against
+        │      bandit.py        outcomes; Beta posteriors moved only by
+        │                       bounded exploration. Reported, not auto-applied.
         ▼
  MEASURE ──── evaluate.py ──── vs do-nothing and blind retry, paired
 ```
@@ -332,25 +341,30 @@ LLM_MODEL=llama-3.3-70b-versatile
 ```
 backend/salvage/
   taxonomy.py        48 documented Razorpay reasons → 9 failure classes
+  diagnosis.py       LLM fallback for what the rules cannot resolve
   economics.py       action costs, effectiveness matrix, net EV, guardrails
   policy.py          the deterministic decision engine
+  controls.py        merchant kill switch and review-first mode
   executor.py        turns approved decisions into real actions
-  pipeline.py        six-stage orchestration with audit at every step
+  verification.py    settlement matching and reconciliation
+  learning.py        audits the effectiveness matrix against outcomes
+  bandit.py          Beta posteriors + bounded Thompson exploration
+  pipeline.py        stage orchestration with audit at every step
   evaluate.py        paired strategy comparison
   db.py              SQLite, append-only audit trail
   main.py            FastAPI
   ml/                features · calibrated training · inference
   simulator/         event generator · counterfactual outcome oracle
   integrations/      Razorpay Payment Links · provider-agnostic LLM
-backend/tests/       49 tests, guardrails first
-frontend/            Next.js dashboard, four views
+backend/tests/       187 tests, guardrails first, hermetic by default
+frontend/            Next.js dashboard, six views
 INCIDENTS.md         engineering log — what broke, why, and the fix
 ```
 
 ## What broke
 
 [`INCIDENTS.md`](INCIDENTS.md) is written as things break, not reconstructed
-afterwards. Seven entries. The ones worth reading:
+afterwards. Thirteen entries. The ones worth reading:
 
 - **INC-003** — the policy engine ranked interventions by *cost*, not fitness,
   and confidently told customers their expired card had expired. One
@@ -376,14 +390,21 @@ Stated plainly, because they are the first things a reviewer should ask about.
   is built specifically against circularity — outcomes are driven by latent
   variables the model never sees, and it is scored against the Bayes ceiling —
   but synthetic remains synthetic.
-- **Action effectiveness is hand-authored.** The matrix in `economics.py`
-  encodes domain judgement, not learned parameters. It is documented per-entry
-  so a reviewer can disagree with a specific number. In production these would
-  be fitted from holdout experiments.
+- **Action effectiveness starts hand-authored, and is only partly learned.**
+  The matrix in `economics.py` encodes domain judgement, documented per-entry
+  so a reviewer can disagree with a specific number. `bandit.py` now fits it
+  from observed outcomes — but only where bounded exploration has created the
+  variation that makes effectiveness identifiable at all. Under the default
+  deterministic policy, exploration is off and most arms stay at their prior
+  forever, correctly: the Learning view lists exactly which, rather than
+  reporting a confident number for an action the system has never taken.
 - **Retries are scheduled, not executed.** Razorpay's API has no
   "retry this failed payment" endpoint; genuine re-presentment requires stored
   credentials or a mandate. Payment Links are the honest recovery mechanism and
   are what the system actually creates.
-- **Outcomes come from the simulator.** In production these arrive as
-  `payment.captured` webhooks. The `source` column records which, so a measured
-  outcome is never confusable with a simulated one.
+- **Outcomes in the demo batch come from the simulator.** The production path
+  exists and is exercised: `payment.captured`, `payment.authorized`,
+  `order.paid` and `payment_link.paid` are matched back to the failed payment,
+  and `reconcile()` polls for links whose webhook never arrived. The `source`
+  column records which produced each outcome, so a measured recovery is never
+  confusable with a simulated one — but on this batch, most are simulated.

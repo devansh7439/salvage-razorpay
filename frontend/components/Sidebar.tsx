@@ -12,7 +12,13 @@ import { AgentControlPanel } from "./AgentControlPanel";
  * work?" without navigating anywhere, plus the action that regenerates it.
  */
 
-export type View = "command" | "queue" | "evaluation" | "exceptions" | "integrations";
+export type View =
+  | "command"
+  | "queue"
+  | "evaluation"
+  | "learning"
+  | "exceptions"
+  | "integrations";
 
 const GROUPS: { label: string; items: { id: View; label: string; icon: string }[] }[] =
   [
@@ -25,7 +31,10 @@ const GROUPS: { label: string; items: { id: View; label: string; icon: string }[
     },
     {
       label: "Optimize",
-      items: [{ id: "evaluation", label: "Evaluation", icon: "chart" }],
+      items: [
+        { id: "evaluation", label: "Evaluation", icon: "chart" },
+        { id: "learning", label: "Learning", icon: "sparkle" },
+      ],
     },
     {
       label: "Review",

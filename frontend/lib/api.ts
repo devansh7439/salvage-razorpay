@@ -149,6 +149,73 @@ export interface Evaluation {
   } | null;
 }
 
+/**
+ * The LEARN stage, in two halves that answer different questions.
+ *
+ * `checks` audits the hand-authored effectiveness matrix against observed
+ * outcomes and reports where the data no longer supports the number. It never
+ * changes anything - a person changes the number.
+ *
+ * `effectiveness` is the Beta posterior the bandit maintains per arm. An arm
+ * the policy never picks carries no evidence, so it sits at its prior; the UI
+ * has to say so rather than render the prior as if it were learned.
+ */
+export interface AssumptionCheck {
+  failure_class: string;
+  action: string;
+  assumed: number;
+  observed: number;
+  n: number;
+  ci_low: number;
+  ci_high: number;
+  sufficient: boolean;
+  drifted: boolean;
+  recommendation: string;
+}
+
+export interface OrganicCheck {
+  failure_class: string;
+  assumed: number;
+  observed: number;
+  n: number;
+  ci_low: number;
+  ci_high: number;
+  sufficient: boolean;
+}
+
+export interface ArmPosterior {
+  failure_class: string;
+  action: string;
+  prior: number;
+  posterior_mean: number;
+  stdev: number;
+  observations: number;
+  exposure: number;
+  successes: number;
+  moved: number;
+}
+
+export interface Learning {
+  assumptions_checked: number;
+  drifted: number;
+  insufficient_data: number;
+  min_samples: number;
+  drift_threshold: number;
+  matrix_entries: number;
+  policy: string;
+  checks: AssumptionCheck[];
+  organic_baseline: OrganicCheck[];
+  effectiveness: {
+    arms: number;
+    informed_arms: number;
+    materially_moved: number;
+    prior_strength: number;
+    posteriors: ArmPosterior[];
+    identification: string;
+    honesty: string;
+  };
+}
+
 export interface ExceptionReport {
   total: number;
   value_paise: number;
@@ -178,6 +245,7 @@ export const api = {
   eventDetail: (id: string) => get<EventDetail>(`/api/events/${id}`),
   evaluate: () => get<Evaluation>("/api/evaluate"),
   exceptions: () => get<ExceptionReport>("/api/exceptions"),
+  learning: () => get<Learning>("/api/learning"),
   load: async () => {
     const res = await fetch(`${BASE}/api/simulate/load`, { method: "POST" });
     if (!res.ok) throw new Error(`load -> ${res.status}`);
