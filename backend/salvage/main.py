@@ -22,7 +22,7 @@ from typing import Any
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from salvage import db
+from salvage import bandit, db
 from salvage.config import settings
 from salvage.controls import AgentMode, controls
 from salvage.economics import ACTION_COSTS, DEFAULT_POLICY, RecoveryAction
@@ -463,7 +463,7 @@ def learning() -> dict[str, Any]:
     from a few hundred outcomes would let a bad fortnight teach the system to
     stop recovering, with no human in the path.
     """
-    return learning_report()
+    return {**learning_report(), "effectiveness": bandit.convergence_report()}
 
 
 @app.get("/api/evaluate")

@@ -29,6 +29,7 @@ Decisions are made in three ordered stages, and the order is load-bearing:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from salvage.economics import (
@@ -167,6 +168,7 @@ def decide(
     base_propensity: float,
     context: RecoveryContext | None = None,
     policy: MerchantPolicy = DEFAULT_POLICY,
+    effectiveness_for: Callable[[str, RecoveryAction], float] | None = None,
 ) -> PolicyDecision:
     """Choose a recovery action for one failed payment.
 
@@ -179,6 +181,11 @@ def decide(
             it with the action-effectiveness matrix in `economics`.
         context: Recovery history. Defaults to a fresh, untouched payment.
         policy: Merchant guardrails.
+        effectiveness_for: Optional override supplying an effectiveness value
+            per (failure_class, action). Used by the exploration arm to price
+            actions against a Thompson draw instead of the point estimate.
+            Every hard constraint still runs first and unchanged - exploration
+            can only reorder actions that were already permitted.
 
     Returns:
         A PolicyDecision carrying the action and its full derivation.
@@ -367,6 +374,7 @@ def decide(
                 base_propensity,
                 classification.failure_class.value,
                 policy,
+                effectiveness_for,
             )
             for a in eligible
         ),

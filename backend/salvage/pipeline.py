@@ -22,7 +22,7 @@ from collections.abc import Collection, Iterable, Iterator
 from dataclasses import replace
 from typing import Any
 
-from salvage import db
+from salvage import bandit, db
 from salvage import diagnosis as ai_diagnosis
 from salvage.controls import controls
 from salvage.economics import DEFAULT_POLICY, MerchantPolicy, RecoveryAction
@@ -369,9 +369,47 @@ def _write_chunk(
                     policy, max_autonomous_amount_paise=ai_ceiling
                 )
 
-            decision = decide(
-                classification, event.amount, propensity, context, effective_policy
+            # Bounded exploration. A small, capped slice of low-value
+            # payments is priced against a Thompson draw from the posterior
+            # rather than the point estimate, which is the only way the system
+            # ever observes what its unchosen actions would have done.
+            #
+            # Every hard constraint has already run. Exploration can reorder
+            # actions that were permitted; it cannot permit a new one.
+            exploring = bandit.should_explore(
+                event.id,
+                event.amount,
+                policy.explore_fraction,
+                policy.max_explore_amount_paise,
             )
+            override = None
+            if exploring:
+                def override(fc: str, act: RecoveryAction, _eid=event.id) -> float:
+                    return bandit.exploration_effectiveness(fc, act, _eid)
+
+            decision = decide(
+                classification,
+                event.amount,
+                propensity,
+                context,
+                effective_policy,
+                override,
+            )
+            if exploring:
+                trail.append(
+                    db.audit_row(
+                        event.id,
+                        "EXPLORED",
+                        f"Assigned to the exploration arm; {decision.action.value} "
+                        "priced against a posterior draw rather than the point "
+                        "estimate.",
+                        {
+                            "explore_fraction": policy.explore_fraction,
+                            "max_explore_amount_paise": policy.max_explore_amount_paise,
+                            "action": decision.action.value,
+                        },
+                    )
+                )
             claimed = db.insert_decision(
                 conn, event.id, classification, propensity, decision, reprocess
             )

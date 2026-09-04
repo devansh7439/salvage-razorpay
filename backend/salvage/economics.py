@@ -16,6 +16,7 @@ own amount convention, so no float rounding ever touches a rupee figure.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 
@@ -136,7 +137,24 @@ class MerchantPolicy:
     max_autonomous_amount_paise: int = 5_000_000
     require_human_above_threshold: bool = True
 
+    # -- Learning --------------------------------------------------------
+    # Effectiveness is only identifiable where assignment varies, so a
+    # deterministic policy can never learn what its unchosen actions would
+    # have done. Exploration buys that evidence, and these two fields are
+    # what it is allowed to cost.
+    #
+    # Off by default: deliberately taking a worse action with a customer's
+    # payment is a decision a merchant makes, not a default they discover.
+    explore_fraction: float = 0.0
+    max_explore_amount_paise: int = 200_000
+
     def __post_init__(self) -> None:
+        if not 0.0 <= self.explore_fraction <= 0.5:
+            raise ValueError(
+                "explore_fraction must be in [0, 0.5]; exploring more than half "
+                f"of traffic is not an experiment, it is a policy change: "
+                f"{self.explore_fraction}"
+            )
         if not 0.0 <= self.mdr_rate < 1.0:
             raise ValueError(f"mdr_rate must be in [0, 1): {self.mdr_rate}")
         if self.max_attempts_per_payment < 1:
@@ -326,6 +344,7 @@ def value_action(
     base_propensity: float,
     failure_class: str,
     policy: MerchantPolicy = DEFAULT_POLICY,
+    effectiveness_for: Callable[[str, RecoveryAction], float] | None = None,
 ) -> Valuation:
     """Compute the net expected value of taking one action.
 
@@ -373,7 +392,7 @@ def value_action(
     if amount_paise < 0:
         raise ValueError(f"amount_paise must be non-negative, got {amount_paise}")
 
-    fit = effectiveness(failure_class, action)
+    fit = (effectiveness_for or effectiveness)(failure_class, action)
     probability = base_propensity * fit
     p_organic = base_propensity * organic_baseline(failure_class)
 
