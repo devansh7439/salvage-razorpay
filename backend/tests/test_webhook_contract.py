@@ -134,6 +134,71 @@ class TestSignatureVerification:
         body = json.dumps(payload).encode()
         assert not razorpay_client.verify_webhook_signature(body, "")
 
+    def test_unsigned_ingest_is_allowed_only_in_fixture_mode(self, monkeypatch):
+        """No secret and no credentials: nothing this system does leaves the
+        process, so open ingest costs a reviewer nothing and buys them a
+        zero-config demo."""
+        monkeypatch.setattr(settings, "razorpay_webhook_secret", "")
+        monkeypatch.setattr(settings, "razorpay_key_id", "")
+        monkeypatch.setattr(settings, "razorpay_key_secret", "")
+        assert razorpay_client.verify_webhook_signature(b"{}", "")
+
+    def test_live_credentials_without_a_secret_fail_closed(self, monkeypatch):
+        """Regression: signature checks were skipped whenever no secret was
+        set, including when live keys were present.
+
+        That configuration - real keys, forgotten webhook secret - is the one
+        where the hole is real: the same unauthenticated request creates
+        genuine Payment Links and sends genuine messages. It must be refused,
+        not merely logged.
+        """
+        monkeypatch.setattr(settings, "razorpay_webhook_secret", "")
+        monkeypatch.setattr(settings, "razorpay_key_id", "rzp_test_abc")
+        monkeypatch.setattr(settings, "razorpay_key_secret", "secret")
+        assert not razorpay_client.verify_webhook_signature(b"{}", "")
+
+
+class TestMalformedDeliveries:
+    """Razorpay redelivers on any non-2xx, so a bad body must not 500."""
+
+    def _client(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setattr(db.settings, "database_path", tmp_path / "wh.db")
+        db.reset_db()
+        from salvage.main import app
+
+        return TestClient(app)
+
+    def test_malformed_json_is_rejected_as_a_client_error(
+        self, tmp_path, monkeypatch
+    ):
+        """A 500 here would be redelivered forever, because the body will
+        never become valid."""
+        client = self._client(tmp_path, monkeypatch)
+        response = client.post(
+            "/webhook",
+            content=b"{not json at all",
+            headers={"Content-Type": "application/json"},
+        )
+        assert response.status_code == 400
+
+    def test_a_json_scalar_body_is_rejected(self, tmp_path, monkeypatch):
+        """`[]` and `null` are valid JSON and were reaching the parser."""
+        client = self._client(tmp_path, monkeypatch)
+        for body in (b"[]", b"null", b'"a string"'):
+            assert client.post("/webhook", content=body).status_code == 400
+
+    def test_an_unrelated_event_is_accepted_and_ignored(
+        self, tmp_path, monkeypatch
+    ):
+        client = self._client(tmp_path, monkeypatch)
+        response = client.post(
+            "/webhook", json={"event": "refund.created", "payload": {}}
+        )
+        assert response.status_code == 200
+        assert response.json()["accepted"] is False
+
 
 class TestPaymentLinkRequestShape:
     """The outbound request is built identically in live and fixture mode, so

@@ -242,6 +242,99 @@ class TestCreditIsConservative:
         assert out["organic"] == 1
         assert out["incremental_paise"] == 0
 
+    def test_a_decision_that_never_executed_earns_no_credit(self, db_path):
+        """Regression: credit was keyed on the decision, not the action.
+
+        A decision is not an intervention. Review-first mode records decisions
+        and executes nothing; the kill switch stops execution mid-batch. In
+        both cases the customer is untouched, so a settlement afterwards is
+        indistinguishable from organic recovery - and was being billed as
+        caused by Salvage.
+        """
+        events = generate_events(30, seed=71)
+        process_batch(events, execute_actions=False)
+
+        with db.connect() as conn:
+            row = conn.execute(
+                "SELECT event_id FROM decisions WHERE action != 'DROP' LIMIT 1"
+            ).fetchone()
+            assert conn.execute(
+                "SELECT COUNT(*) n FROM executions"
+            ).fetchone()["n"] == 0
+        target = next(e for e in events if e.id == row["event_id"])
+
+        record_settlement(
+            Settlement(
+                payment_id="pay_unexecuted",
+                order_id=target.order_id,
+                reference_id=target.id,
+                amount_paise=target.amount,
+                status="captured",
+                source="webhook",
+            )
+        )
+
+        with db.connect() as conn:
+            out = conn.execute(
+                "SELECT * FROM outcomes WHERE event_id = ?", (target.id,)
+            ).fetchone()
+
+        assert out["recovered"] == 1, "the money did arrive"
+        assert out["organic"] == 1
+        assert out["incremental_paise"] == 0, (
+            "credited a recovery to an action that was never taken"
+        )
+
+    def test_a_failed_payment_link_earns_no_credit(self, db_path, monkeypatch):
+        """A link the API refused to create never reached the customer.
+
+        The failure is recorded, which is right. What must not follow is
+        crediting the recovery to an intervention that did not happen.
+        """
+        from salvage.integrations import razorpay_client
+
+        monkeypatch.setattr(
+            razorpay_client,
+            "create_payment_link",
+            lambda event, description=None: razorpay_client.PaymentLinkResult(
+                ok=False,
+                short_url=None,
+                link_id=None,
+                reference_id="ref",
+                provider="razorpay_test",
+                error="simulated API outage",
+            ),
+        )
+
+        events = generate_events(40, seed=73)
+        process_batch(events)
+
+        with db.connect() as conn:
+            row = conn.execute(
+                "SELECT event_id FROM executions WHERE action = 'PAYMENT_LINK'"
+                " AND status = 'FAILED' LIMIT 1"
+            ).fetchone()
+        assert row is not None, "expected a failed payment link to exercise this"
+        target = next(e for e in events if e.id == row["event_id"])
+
+        record_settlement(
+            Settlement(
+                payment_id="pay_after_failure",
+                order_id=target.order_id,
+                reference_id=target.id,
+                amount_paise=target.amount,
+                status="captured",
+                source="webhook",
+            )
+        )
+
+        with db.connect() as conn:
+            out = conn.execute(
+                "SELECT * FROM outcomes WHERE event_id = ?", (target.id,)
+            ).fetchone()
+        assert out["incremental_paise"] == 0
+        assert out["organic"] == 1
+
     def test_verification_writes_an_audit_row(self, db_path):
         events = generate_events(10, seed=53)
         process_batch(events)

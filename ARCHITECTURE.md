@@ -136,10 +136,37 @@ immediate one for bank downtime, because that claim is a number in a table with
 a comment next to it — not a weight inside a forest. In production both would
 be fitted from holdout experiments.
 
-`ORGANIC_BASELINE` is kept **separate from the oracle's ground truth**. The
-policy engine is not permitted to read the simulator's reality; it uses the kind
-of estimate any merchant can produce by holding out a no-contact cohort. The two
-are allowed to disagree, exactly as an estimate and reality do in production.
+`ORGANIC_BASELINE` is kept **structurally separate from the oracle's ground
+truth**: nothing in `policy.py`, `economics.py` or `ml/features.py` imports the
+simulator, and a test asserts it rather than leaving it to good intentions.
+The policy engine forms its estimates the way a merchant would — by holding out
+a no-contact cohort — and never reads the number the oracle actually uses.
+
+Being honest about the limit of that: the two tables currently hold the **same
+values**, because both were written from the same domain judgement. So on this
+batch the merchant's estimate happens to be exactly right, which flatters the
+policy. The same is true of `ACTION_EFFECTIVENESS`, which the oracle also
+consults — meaning Salvage is guaranteed to pick whichever action the oracle
+will reward most, and the comparison cannot, on its own, show it choosing
+badly.
+
+That is the sharpest available attack on this evaluation, so it is measured
+rather than argued. Re-running with the oracle given a *different* reality,
+while the policy keeps its hand-authored beliefs:
+
+| oracle differs by | Salvage net | blind retry net | advantage | wins |
+|---|---:|---:|---:|---:|
+| 0% (as shipped) | ₹6,97,405 | ₹3,61,855 | ₹3,35,550 | — |
+| ±15% | ₹6,94,095 | ₹3,69,972 | ₹3,24,123 | 5/5 |
+| ±30% | ₹6,65,815 | ₹3,59,433 | ₹3,06,382 | 5/5 |
+| ±50% | ₹6,30,188 | ₹3,37,318 | ₹2,92,869 | 5/5 |
+
+At ±50% — assumptions wrong by half — the advantage keeps 87% of its size and
+never once reverses; the worst single draw still clears ₹1,79,420. The result
+is produced by refusing to spend on payments that cannot pay it back, and that
+does not require the effectiveness numbers to be right, only to be roughly
+ordered. `test_the_result_survives_the_assumptions_being_wrong` keeps a
+smaller version of this honest.
 
 ---
 

@@ -223,6 +223,42 @@ class TestPolicyStillHoldsAuthority:
         assert c.entry is None, "must not masquerade as a documented reason"
 
 
+class TestSlowProviderCannotStallTheBatch:
+    """This stage is pure upside, so it must never become a liability.
+
+    It runs once per undiagnosable payment, serially, and blocks for up to
+    REQUEST_TIMEOUT on each. A provider that hangs or rate-limits would
+    otherwise stall a thousand-payment batch for minutes to buy coverage the
+    system is happy to do without.
+    """
+
+    def test_repeated_failures_stop_the_calls(self, live, monkeypatch):
+        diagnosis.reset_breaker()
+        attempts = {"n": 0}
+
+        def failing(*_args, **_kwargs):
+            attempts["n"] += 1
+            raise RuntimeError("provider down")
+
+        monkeypatch.setattr(diagnosis.httpx, "post", failing)
+
+        for _ in range(diagnosis.BREAKER_THRESHOLD + 10):
+            result = diagnose("weird_reason", "something", "X", "customer", None)
+            assert not result.accepted
+
+        assert attempts["n"] == diagnosis.BREAKER_THRESHOLD, (
+            "kept calling a provider that had already failed "
+            f"{diagnosis.BREAKER_THRESHOLD} times in a row"
+        )
+        diagnosis.reset_breaker()
+
+    def test_a_success_closes_the_breaker_again(self, live, monkeypatch):
+        diagnosis.reset_breaker()
+        _reply(monkeypatch, '{"failure_class": "BANK_DOWNTIME", "confidence": 0.9}')
+        assert diagnose("x", "bank was down", "X", "gateway", None).accepted
+        assert not diagnosis._breaker_open()
+
+
 class TestDegradesSafely:
     def test_no_provider_configured_is_a_clean_no(self, monkeypatch):
         monkeypatch.setattr(diagnosis.settings, "llm_base_url", "")

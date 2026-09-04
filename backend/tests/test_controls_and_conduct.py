@@ -154,6 +154,51 @@ class TestReviewFirstMode:
         assert executions == 0
         assert audit > 0
 
+    def test_review_first_claims_no_recovery_it_did_not_cause(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression: outcomes were adjudicated against the *decision*.
+
+        In review-first mode the agent executes nothing, yet every decided
+        action was scored through the oracle as though it had been carried
+        out. A 300-payment batch reported Rs 3,31,947 of "incremental
+        recovery genuinely caused by the system" while the system had, by
+        construction, done nothing at all.
+
+        That is the exact error the whole project claims to have designed
+        against - billing for revenue that would have arrived anyway - and it
+        appeared in the mode Razorpay's own guidance says to run on day one.
+        """
+        from salvage.pipeline import record_outcomes
+
+        monkeypatch.setattr(db.settings, "database_path", tmp_path / "rfo.db")
+        db.reset_db()
+        events = generate_events(200, seed=909)
+
+        process_batch(events, execute_actions=False)
+        record_outcomes(events)
+
+        with db.connect() as conn:
+            executions = conn.execute(
+                "SELECT COUNT(*) n FROM executions"
+            ).fetchone()["n"]
+            totals = conn.execute(
+                """
+                SELECT COALESCE(SUM(incremental_paise), 0) incremental,
+                       COALESCE(SUM(recovered_paise), 0)   gross
+                FROM outcomes
+                """
+            ).fetchone()
+
+        assert executions == 0, "review-first mode must execute nothing"
+        assert totals["incremental"] == 0, (
+            f"claimed Rs {totals['incremental'] / 100:,.2f} of incremental "
+            "recovery without taking a single action"
+        )
+        # Organic recovery still happens and is still reported - it is real
+        # money. It is simply not Salvage's to claim.
+        assert totals["gross"] > 0
+
     def test_autonomous_mode_does_execute(self, tmp_path, monkeypatch):
         monkeypatch.setattr(db.settings, "database_path", tmp_path / "au.db")
         db.reset_db()

@@ -34,6 +34,7 @@ from typing import Any
 
 from salvage import db
 from salvage.config import settings
+from salvage.executor import ACTED_STATUSES
 
 logger = logging.getLogger(__name__)
 
@@ -178,10 +179,20 @@ def record_settlement(settlement: Settlement) -> str | None:
         if event is None:
             return None
 
-        decision = conn.execute(
-            "SELECT action FROM decisions WHERE event_id = ?", (event_id,)
+        # Credit requires an intervention that actually happened, not merely
+        # one that was decided on. Review-first mode records a full decision
+        # and executes nothing; the kill switch stops execution mid-batch; a
+        # payment link the API refused to create never reached the customer.
+        # In all three the customer was left untouched, so money arriving
+        # afterwards arrived on its own - and billing it as recovery would be
+        # exactly the organic-credit error this system exists to refuse.
+        placeholders = ",".join("?" * len(ACTED_STATUSES))
+        execution = conn.execute(
+            f"SELECT action FROM executions WHERE event_id = ?"
+            f" AND status IN ({placeholders}) LIMIT 1",
+            (event_id, *ACTED_STATUSES),
         ).fetchone()
-        acted = decision is not None and decision["action"] != "DROP"
+        acted = execution is not None
 
         amount = settlement.amount_paise or event["amount"]
 
