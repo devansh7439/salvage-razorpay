@@ -22,6 +22,7 @@ from collections.abc import Collection, Iterable, Iterator
 from typing import Any
 
 from salvage import db
+from salvage.controls import controls
 from salvage.economics import DEFAULT_POLICY, MerchantPolicy, RecoveryAction
 from salvage.executor import execute
 from salvage.ml.predict import predict_propensity_batch
@@ -135,7 +136,7 @@ def _already_decided(
 def process_batch(
     events: Iterable[Any],
     policy: MerchantPolicy = DEFAULT_POLICY,
-    execute_actions: bool = True,
+    execute_actions: bool | None = None,
     chunk_size: int = CHUNK_SIZE,
     scoring_window: int = SCORING_WINDOW,
     reprocess: bool = False,
@@ -149,9 +150,11 @@ def process_batch(
     Args:
         events: Failed payments to process. Consumed lazily.
         policy: Merchant guardrails.
-        execute_actions: When False, decisions are made and persisted but no
-            external calls occur. This is the "review-first" posture a merchant
-            would run on day one, before granting the agent authority to act.
+        execute_actions: Override the live control plane. Leave as None in
+            normal operation so the merchant's kill switch and review-first
+            setting govern execution; a control the pipeline can ignore by
+            default is not a control. When False, decisions are still made,
+            persisted and auditable - only the side effects are withheld.
         chunk_size: Events per write transaction.
         scoring_window: Events per inference call. Larger than `chunk_size` on
             purpose - see SCORING_WINDOW.
@@ -167,6 +170,14 @@ def process_batch(
     exceptions = 0
     processed = 0
     skipped = 0
+
+    # Read once per batch rather than per event, so a mid-batch toggle cannot
+    # produce a run where some payments executed and others did not for no
+    # recorded reason. The control is honoured at a boundary a human can point
+    # at afterwards.
+    live = controls.get()
+    if execute_actions is None:
+        execute_actions = live.executes
 
     for window in _chunks(events, scoring_window):
         # Razorpay redelivers a webhook on any non-2xx response or timeout, so
@@ -209,6 +220,8 @@ def process_batch(
         "actions": summary,
         "exceptions": exceptions,
         "skipped": skipped,
+        "executed": execute_actions,
+        "agent_status": live.status,
     }
 
 

@@ -24,6 +24,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from salvage import db
 from salvage.config import settings
+from salvage.controls import AgentMode, controls
 from salvage.economics import ACTION_COSTS, DEFAULT_POLICY, RecoveryAction
 from salvage.integrations import llm, razorpay_client
 from salvage.ml import predict
@@ -99,6 +100,37 @@ def _demo_batch() -> list[Any]:
         return _demo_events
 
 
+@app.get("/api/controls")
+def get_controls() -> dict[str, Any]:
+    """Current merchant controls: kill switch and review-first mode."""
+    return controls.get().to_dict()
+
+
+@app.post("/api/controls")
+def set_controls(
+    enabled: bool | None = None,
+    mode: str | None = None,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    """Change agent authority at runtime.
+
+    Deliberately takes effect without a restart or a redeploy. A kill switch
+    that requires either is not a kill switch - it is most needed precisely
+    when something is going wrong and nobody has time to ship anything.
+    """
+    parsed: AgentMode | None = None
+    if mode is not None:
+        try:
+            parsed = AgentMode(mode)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"mode must be one of {[m.value for m in AgentMode]}",
+            ) from None
+
+    return controls.set(enabled=enabled, mode=parsed, reason=reason).to_dict()
+
+
 @app.get("/health")
 def health() -> dict[str, Any]:
     """Liveness plus which integration modes are active.
@@ -110,6 +142,7 @@ def health() -> dict[str, Any]:
     return {
         "status": "ok",
         "model_loaded": predict.is_loaded(),
+        "agent": controls.get().to_dict(),
         "razorpay_mode": razorpay_client.mode(),
         "llm_mode": llm.mode(),
         "webhook_signature_enforced": bool(settings.razorpay_webhook_secret),

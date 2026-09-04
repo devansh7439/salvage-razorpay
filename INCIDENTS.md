@@ -582,3 +582,71 @@ unit rather than in total.
 It also reinforces INC-004's lesson from a different direction: the first three
 attempts at explaining this slowdown were guesses, and all three were wrong.
 Timing the individual operations against a growing table found it in one pass.
+
+---
+
+## INC-011 — The kill switch deadlocked the moment anyone used it
+**When:** 2026-09-04, merchant-controls pass
+**Severity:** Critical — the control failed in exactly the situation it exists for
+
+**What broke.** A script verifying the three agent modes printed the first
+result and then hung indefinitely. No error, no traceback, no timeout — the
+process simply stopped.
+
+```
+  autonomous     status=autonomous  executed=True  decisions=24  executions=18
+  <hang>
+```
+
+The line that never returned was `controls.set(mode=REVIEW_FIRST)`.
+
+**Root cause.** `ControlPlane.set()` mutated state inside its lock and then
+returned `self.get()` — and `get()` acquires the same lock:
+
+```python
+def get(self):
+    with self._lock:
+        return AgentControls(...)
+
+def set(self, ...):
+    with self._lock:
+        ...
+        return self.get()      # same non-reentrant lock, from inside it
+```
+
+`threading.Lock` is not reentrant. The thread blocked waiting for a lock it
+was already holding, forever.
+
+**Why this one is worse than an ordinary deadlock.** The affected method is
+the kill switch. Its entire purpose is to stop the agent *during* an incident —
+mid-batch, under load, when something is already going wrong. The first person
+ever to use it in anger would have hung the process, and the symptom would have
+been "the system stopped responding when we tried to stop it", which is about
+the worst possible failure mode for a safety control.
+
+It also sat behind a plausible-looking API. `set()` returning the resulting
+state is good design; the bug was entirely in *how* that state was produced.
+
+**Why it took three attempts to find.** The first two investigations blamed the
+environment, and that was not unreasonable — 22 orphaned Chrome processes from
+an abandoned browser-screenshot attempt really were starving the machine, and
+`| tail` was buffering output so partial progress was invisible. Both were true
+and neither was the cause. It only became findable after cleaning up the
+processes and running unbuffered to a file, at which point the hang reproduced
+cleanly and always at the same line.
+
+**Fix.** A private `_snapshot()` that assumes the lock is held, called by both
+`get()` and `set()`. `RLock` would also have worked, but making the locking
+discipline explicit is better than making the lock more forgiving — the next
+person to add a method here can see which functions expect to hold the lock.
+
+**Regression test.** `test_set_does_not_deadlock` drives 50 toggle cycles on a
+worker thread with a 10-second join timeout, so a reintroduction fails the
+suite instead of hanging it. A test that hangs is nearly as bad as the bug.
+There is also a concurrency test running three readers against a writer, since
+the switch has to be safe under exactly the load it will meet in practice.
+
+**Lesson applied.** Never call a locking method from inside its own lock. More
+generally: safety controls need tests that exercise them under contention, not
+just tests that assert the flag flipped. This one flipped the flag perfectly
+in single-threaded reasoning and deadlocked the first time it ran.

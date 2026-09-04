@@ -63,6 +63,55 @@ See [Data provenance](#data-provenance) — the split matters and is testable.
 
 ---
 
+## Where this sits next to Razorpay Agent Studio
+
+Razorpay already ships recovery agents — a **Subscription Recovery Agent** that
+applies "smarter retry logic", and an **Abandoned Cart Conversion Agent** that
+calls or messages customers with a payment link. Both are built on Claude.
+
+So "an agent that chases failed payments" is not a gap in their platform. It is
+their platform.
+
+**The gap is the layer underneath.** Those agents decide *how* to recover.
+Nothing published decides **which revenue is worth spending money on, and when
+to stop** — the economics that turn a recovery workflow into an investment
+decision. That is what Salvage is:
+
+```
+Agent Studio agents    HOW to recover   →  call, message, retry, send a link
+Salvage                WHETHER to       →  is this worth it, which action, when to stop
+```
+
+Concretely, this layer contributes three things a workflow agent does not have:
+an **action-conditional net expected value** with real costs attached, an
+**incremental measurement** that refuses to claim credit for organic recovery,
+and a **stopping rule that falls out of the arithmetic** rather than a retry cap.
+
+### Mapping to Razorpay's stated agent principles
+
+Razorpay publishes nine principles and four autonomy limits for agents in
+payments. Salvage was built to that shape:
+
+| Razorpay's principle | Where it lives here |
+|---|---|
+| "Every agent operates within boundaries the merchant defines" | `MerchantPolicy` — attempt caps, contact caps, cooldown, EV floor, autonomy ceiling |
+| "Every action is validated before it executes" | Three-stage engine: hard constraints → eligibility → economics |
+| "Agents don't set prices or invent discounts" | LLM writes copy only; it never sees an amount it can alter |
+| "Customer communication follows consent rules" | `customer_opted_out` → `HARD_OPT_OUT`, checked before any valuation |
+| "Agents must not employ dark patterns" | Generated copy is **scanned and rejected** for false urgency, manufactured pressure, invented offers |
+| "Every single action is logged with a full audit trail" | Append-only `audit_trail`, six stages per payment, with the rejected alternatives |
+| **Review-first mode** | `AgentMode.REVIEW_FIRST` — decides and records, executes nothing |
+| **Immediate kill switch** | `POST /api/controls` — runtime, no restart |
+| **Escalation defaults** | `HARD_HIGH_VALUE_ESCALATION` above the autonomous ceiling |
+| **Irreversibility blocks** | Risk blocks and settled orders are structurally unreachable, at any score |
+
+The dark-patterns check is worth singling out: the system prompt already
+forbids invented offers, but a prompt is a request, not a guarantee. Generated
+copy is checked against the rule and discarded if it trips — because "we told
+the model not to" is not a control.
+
+---
+
 ## The thesis
 
 Recovery is an **investment decision**, not a routing decision.

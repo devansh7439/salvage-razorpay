@@ -56,13 +56,66 @@ CUSTOMER_FACING_REASON: dict[str, str] = {
 }
 
 
+#: Phrases that constitute a dark pattern in a payment-recovery message.
+#:
+#: Razorpay's published position on agents in payments states that agents
+#: "must not employ dark patterns" including false urgency and manufactured
+#: pressure, and that they must not "set prices or invent discounts".
+#:
+#: The system prompt already forbids all of this, but a prompt is a request,
+#: not a guarantee - a model under temperature will occasionally add "hurry,
+#: offer ends today" because that is what recovery copy looks like in its
+#: training data. So generated text is checked rather than trusted, and copy
+#: that trips any of these is discarded in favour of the template.
+#:
+#: Grouped by the principle each one violates, so a reviewer can see the rule
+#: being enforced rather than an opaque blocklist.
+DARK_PATTERN_MARKERS: dict[str, tuple[str, ...]] = {
+    "false_urgency": (
+        "hurry", "act now", "last chance", "expires today", "expiring today",
+        "only today", "limited time", "final notice", "immediately or",
+        "before it's too late", "jaldi karo", "aaj hi", "turant",
+    ),
+    "manufactured_pressure": (
+        "account will be", "will be suspended", "will be blocked",
+        "will be cancelled", "penalty", "legal action", "band ho jayega",
+        "block ho jayega",
+    ),
+    "invented_offers": (
+        "discount", "% off", "cashback", "free delivery", "coupon",
+        "special price", "offer", "chhoot", "muft",
+    ),
+}
+
+
+def find_dark_patterns(text: str) -> list[str]:
+    """Return the principles a message violates, empty when it is clean."""
+    lowered = text.lower()
+    return [
+        principle
+        for principle, markers in DARK_PATTERN_MARKERS.items()
+        if any(marker in lowered for marker in markers)
+    ]
+
+
 @dataclass(frozen=True, slots=True)
 class Message:
-    """A generated recovery message."""
+    """A generated recovery message.
+
+    Attributes:
+        text: The copy to send.
+        provider: Which backend produced it, so live and fallback output are
+            distinguishable in the audit trail rather than looking identical.
+        channel: Delivery channel.
+        blocked_for: Principles a rejected generation violated. Populated when
+            model output was discarded, so the refusal is visible rather than
+            silent.
+    """
 
     text: str
     provider: str
     channel: str = "whatsapp"
+    blocked_for: tuple[str, ...] = ()
 
 
 def _template(
@@ -190,6 +243,22 @@ def generate_message(
         return Message(
             text=_template(customer_name, amount_paise, failure_class, payment_link),
             provider="template_fallback",
+        )
+
+    # The prompt forbids invented offers and manufactured urgency. Prompts are
+    # requests, not guarantees, so the output is checked. A message that would
+    # pressure or mislead a customer is discarded even though generating it
+    # cost real money and latency.
+    violations = find_dark_patterns(text)
+    if violations:
+        logger.warning(
+            "LLM output rejected for %s; using template instead.",
+            ", ".join(violations),
+        )
+        return Message(
+            text=_template(customer_name, amount_paise, failure_class, payment_link),
+            provider="template_fallback",
+            blocked_for=tuple(violations),
         )
 
     return Message(text=text, provider=f"llm:{settings.llm_model}")
