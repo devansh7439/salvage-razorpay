@@ -725,3 +725,63 @@ downstream of it — the metrics, the dashboard, the evaluation — was fed by t
 simulator and therefore looked complete. The gap was only visible by walking
 the required stages one at a time and asking, for each, *which line of code
 does this*.
+
+---
+
+## INC-013 — Two workers, one payment, two interventions
+**When:** 2026-09-04, red-team pass
+**Severity:** Critical — customer-visible, and only reachable under concurrency
+
+**What broke.** A red-team test ran three workers over the same batch
+simultaneously — the shape of a webhook redelivered while the first delivery is
+still being processed:
+
+```
+1 payments executed more than once
+```
+
+**Root cause — the same bug as INC-009, one level up.** INC-009 fixed *sequential*
+redelivery by skipping payments that already carry a decision. But the check and
+the write live in different transactions:
+
+```python
+decided = _already_decided(conn, ids)     # transaction A
+...
+db.insert_decision(...)                   # transaction B
+```
+
+Classic check-then-act. Both workers read "not decided" and both proceed. The
+per-action idempotency key on `executions` does not save it, and the reason is
+the interesting part: by the time the second worker decides, the first has
+already sent a message, so the contact guardrails legitimately steer it to a
+*different* action — with a different key. The UNIQUE constraint never fires
+because the two workers are, correctly, doing different things.
+
+Guarding the mechanism again would not have worked. The thing that must happen
+once is the *decision*, not the action.
+
+**Fix.** `insert_decision` became an atomic claim: `INSERT OR IGNORE` against
+the `decisions` primary key, returning whether this call created the row. Only
+the winner executes. The database arbitrates, which is the one place that can.
+
+**Two more findings from the same pass.**
+
+*The kill switch was read once per batch.* On a 50,000-payment run that is
+minutes of continued execution after someone throws it. Now re-read per chunk.
+
+*The conduct check was unreachable behind the usability check.* Dark-pattern
+scanning ran after the payment-link check, so copy that both omitted the link
+and contained manufactured urgency was rejected for the wrong reason and
+recorded no violation. Reordered: conduct first.
+
+**A test that passed for the wrong reason.** The first kill-switch test asserted
+`executed < decided`, which is vacuously true — DROP decisions never execute —
+so it passed while the switch was doing nothing. It now measures against an
+undisturbed run of the same batch. A test that cannot fail is worse than no
+test, because it is counted as coverage.
+
+**Lesson applied.** Enforce uniqueness on the thing that must happen once. A
+guard on the side effect leaves every *other* side effect unguarded, and under
+concurrency the system will find one. It took writing the attack to see it —
+nineteen of the twenty-one red-team probes passed first time, and the two that
+did not were both in code that had already been reviewed and tested.

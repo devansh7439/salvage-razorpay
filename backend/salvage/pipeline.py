@@ -216,6 +216,7 @@ def process_batch(
                 policy,
                 execute_actions,
                 settled,
+                reprocess,
             )
             processed += result["processed"]
             exceptions += result["exceptions"]
@@ -238,6 +239,7 @@ def _write_chunk(
     policy: MerchantPolicy,
     execute_actions: bool,
     settled: set[str] | None = None,
+    reprocess: bool = False,
 ) -> dict[str, Any]:
     """Decide, execute and persist one chunk inside a single transaction.
 
@@ -316,7 +318,9 @@ def _write_chunk(
             decision = decide(
                 classification, event.amount, propensity, context, policy
             )
-            db.insert_decision(conn, event.id, classification, propensity, decision)
+            claimed = db.insert_decision(
+                conn, event.id, classification, propensity, decision, reprocess
+            )
             trail.append(
                 db.audit_row(
                     event.id,
@@ -342,6 +346,18 @@ def _write_chunk(
             summary[decision.action.value] = summary.get(decision.action.value, 0) + 1
             if decision.is_exception:
                 exceptions += 1
+
+            # Another worker decided this payment between our read and our
+            # write. It owns the execution; acting here would be the second
+            # intervention on one failure.
+            if not claimed:
+                continue
+
+            # The kill switch is re-read per chunk rather than per batch. A
+            # control that only takes effect on the next run is not immediate,
+            # and a large batch can run for minutes after someone throws it.
+            if not controls.get().executes and execute_actions:
+                continue
 
             if not execute_actions or decision.action is RecoveryAction.DROP:
                 continue

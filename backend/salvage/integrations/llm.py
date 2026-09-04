@@ -235,16 +235,6 @@ def generate_message(
             provider="template_fallback",
         )
 
-    # A model that ignores the link instruction produces a message that cannot
-    # be acted on, which is worse than the template. Verified rather than
-    # trusted.
-    if payment_link and payment_link not in text:
-        logger.warning("LLM omitted the payment link; using template instead.")
-        return Message(
-            text=_template(customer_name, amount_paise, failure_class, payment_link),
-            provider="template_fallback",
-        )
-
     # The prompt forbids invented offers and manufactured urgency. Prompts are
     # requests, not guarantees, so the output is checked. A message that would
     # pressure or mislead a customer is discarded even though generating it
@@ -259,6 +249,16 @@ def generate_message(
             text=_template(customer_name, amount_paise, failure_class, payment_link),
             provider="template_fallback",
             blocked_for=tuple(violations),
+        )
+
+    # A model that ignores the link instruction produces a message that cannot
+    # be acted on, which is worse than the template. Verified rather than
+    # trusted.
+    if payment_link and payment_link not in text:
+        logger.warning("LLM omitted the payment link; using template instead.")
+        return Message(
+            text=_template(customer_name, amount_paise, failure_class, payment_link),
+            provider="template_fallback",
         )
 
     return Message(text=text, provider=f"llm:{settings.llm_model}")

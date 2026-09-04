@@ -323,12 +323,34 @@ def insert_decision(
     classification: Any,
     base_propensity: float,
     decision: Any,
-) -> None:
-    """Persist a decision together with the alternatives it beat."""
+    replace: bool = False,
+) -> bool:
+    """Persist a decision, and claim the right to execute it.
+
+    Returns True when this call created the row, False when another worker had
+    already decided this payment.
+
+    That return value is the concurrency control for the whole pipeline.
+    Reading "has this been decided?" and then writing the decision is a
+    check-then-act race: two workers handed the same redelivered webhook both
+    read "no" and both proceed. The per-action idempotency key on `executions`
+    does not save it, because by the time the second worker decides, the first
+    has already sent a message - so the contact guardrails legitimately steer it
+    to a *different* action, with a different key, and the UNIQUE constraint
+    never fires.
+
+    Letting the primary key arbitrate closes it. Exactly one INSERT can succeed,
+    and only that winner executes.
+
+    Args:
+        replace: Overwrite an existing decision. Only for a deliberate replay,
+            where re-deciding is the point.
+    """
     v = decision.valuation
-    conn.execute(
-        """
-        INSERT OR REPLACE INTO decisions (
+    verb = "INSERT OR REPLACE" if replace else "INSERT OR IGNORE"
+    cursor = conn.execute(
+        f"""
+        {verb} INTO decisions (
             event_id, decided_at, failure_class, diagnosis_note,
             diagnosis_confident, base_propensity, action, rule_id, rationale,
             action_probability, gross_expected, mdr, action_cost, net_ev,
@@ -368,6 +390,7 @@ def insert_decision(
             int(decision.is_exception),
         ),
     )
+    return cursor.rowcount > 0
 
 
 def insert_execution(
