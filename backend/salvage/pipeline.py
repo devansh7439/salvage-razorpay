@@ -19,9 +19,11 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Collection, Iterable, Iterator
+from dataclasses import replace
 from typing import Any
 
 from salvage import db
+from salvage import diagnosis as ai_diagnosis
 from salvage.controls import controls
 from salvage.economics import DEFAULT_POLICY, MerchantPolicy, RecoveryAction
 from salvage.executor import execute
@@ -301,6 +303,52 @@ def _write_chunk(
                 )
             )
 
+            # The one place a language model earns its keep: the rules have
+            # already failed, so the model can only add coverage. Everything it
+            # proposes is validated against an allowlist and a confidence
+            # threshold before it reaches the policy engine.
+            ai_ceiling: int | None = None
+            if not classification.confident:
+                proposal = ai_diagnosis.diagnose(
+                    getattr(event, "error_reason", None),
+                    getattr(event, "error_description", None),
+                    getattr(event, "error_code", None),
+                    getattr(event, "error_source", None),
+                    getattr(event, "error_step", None),
+                    getattr(event, "method", None),
+                )
+                if proposal.provider != "none":
+                    trail.append(
+                        db.audit_row(
+                            event.id,
+                            "AI_DIAGNOSIS",
+                            (
+                                f"Model proposed {proposal.failure_class.value} at "
+                                f"{proposal.confidence:.0%} confidence"
+                                if proposal.failure_class
+                                else "Model returned no usable classification"
+                            )
+                            + ("" if proposal.accepted else f" - rejected: {proposal.rejected_because}"),
+                            {
+                                "proposed_class": (
+                                    proposal.failure_class.value
+                                    if proposal.failure_class
+                                    else None
+                                ),
+                                "confidence": round(proposal.confidence, 3),
+                                "reasoning": proposal.reasoning,
+                                "accepted": proposal.accepted,
+                                "rejected_because": proposal.rejected_because,
+                                "provider": proposal.provider,
+                            },
+                        )
+                    )
+                if proposal.accepted:
+                    classification = ai_diagnosis.apply(classification, proposal)
+                    ai_ceiling = ai_diagnosis.autonomy_ceiling(
+                        policy.max_autonomous_amount_paise
+                    )
+
             trail.append(
                 db.audit_row(
                     event.id,
@@ -315,8 +363,14 @@ def _write_chunk(
                 contacts_today=contacts.get(getattr(event, "customer_id", ""), 0),
                 already_recovered=event.id in (settled or set()),
             )
+            effective_policy = policy
+            if ai_ceiling is not None:
+                effective_policy = replace(
+                    policy, max_autonomous_amount_paise=ai_ceiling
+                )
+
             decision = decide(
-                classification, event.amount, propensity, context, policy
+                classification, event.amount, propensity, context, effective_policy
             )
             claimed = db.insert_decision(
                 conn, event.id, classification, propensity, decision, reprocess

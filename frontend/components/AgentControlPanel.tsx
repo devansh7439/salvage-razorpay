@@ -9,14 +9,15 @@ import { Icon } from "./ui";
  *
  * Razorpay's published position names an "immediate kill switch" among the
  * controls a merchant must always hold. A switch is only immediate if it is
- * reachable at the moment you need it — which is mid-incident, from whatever
- * screen you happen to be on. Putting it behind navigation would make it a
- * setting, not a control.
+ * reachable at the moment you need it - mid-incident, from whatever screen you
+ * happen to be on. Behind navigation it would be a setting, not a control.
  *
- * The three states are deliberately distinct rather than a single on/off:
- * review-first is not a degraded autonomous mode, it is the posture a merchant
- * runs on day one, where the agent produces its full decision trail and
- * executes none of it.
+ * Kept deliberately compact. The first version carried a mode toggle, a kill
+ * button and an explanatory paragraph, which came to roughly 320px - enough to
+ * push half the navigation below the fold on a laptop viewport. A control that
+ * costs you the rest of the interface is the wrong trade, so the explanation
+ * moved to the Integrations view and what remains is the state, the switch,
+ * and one line of consequence.
  */
 export function AgentControlPanel({
   controls,
@@ -43,48 +44,44 @@ export function AgentControlPanel({
       ? "bg-amber-500"
       : "bg-emerald-500";
 
-  const label = killed
-    ? "Disabled"
-    : reviewing
-      ? "Review-first"
-      : "Autonomous";
-
   return (
-    <div className="rounded-xl border border-[var(--border)] bg-white p-4">
+    <div className="rounded-xl border border-[var(--border)] bg-white px-3 py-2.5">
       <div className="flex items-center justify-between">
         <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--faint)]">
-          Agent authority
+          Agent
         </span>
         <span className="flex items-center gap-1.5 text-[11px] font-medium">
           <span className={`h-1.5 w-1.5 rounded-full ${dot}`} />
-          {label}
+          {killed ? "Disabled" : reviewing ? "Review-first" : "Autonomous"}
         </span>
       </div>
 
-      <div className="mt-3 grid grid-cols-2 gap-1.5">
+      {/* Segmented control: the two modes are a single choice, not two
+          buttons, so they read as mutually exclusive at a glance. */}
+      <div className="mt-2 flex rounded-lg border border-[var(--border)] p-0.5">
         <button
-          disabled={busy}
-          onClick={() =>
-            onChange({ enabled: true, mode: "review_first" })
-          }
-          className={`rounded-lg border px-2 py-1.5 text-[11px] font-medium transition disabled:opacity-50 ${
+          disabled={busy || killed}
+          onClick={() => onChange({ enabled: true, mode: "review_first" })}
+          title="Decide and record everything; execute nothing"
+          className={`flex-1 rounded-md px-2 py-1 text-[11px] font-medium transition disabled:opacity-40 ${
             reviewing
-              ? "border-transparent bg-[var(--ink)] text-white"
-              : "border-[var(--border)] bg-white text-[var(--muted)] hover:bg-[#fafafa]"
+              ? "bg-[var(--ink)] text-white"
+              : "text-[var(--muted)] hover:bg-[#fafafa]"
           }`}
         >
-          Review-first
+          Review
         </button>
         <button
-          disabled={busy}
+          disabled={busy || killed}
           onClick={() => onChange({ enabled: true, mode: "autonomous" })}
-          className={`rounded-lg border px-2 py-1.5 text-[11px] font-medium transition disabled:opacity-50 ${
+          title="Execute approved decisions within the merchant guardrails"
+          className={`flex-1 rounded-md px-2 py-1 text-[11px] font-medium transition disabled:opacity-40 ${
             live
-              ? "border-transparent bg-[var(--ink)] text-white"
-              : "border-[var(--border)] bg-white text-[var(--muted)] hover:bg-[#fafafa]"
+              ? "bg-[var(--ink)] text-white"
+              : "text-[var(--muted)] hover:bg-[#fafafa]"
           }`}
         >
-          Autonomous
+          Auto
         </button>
       </div>
 
@@ -105,25 +102,15 @@ export function AgentControlPanel({
         }`}
       >
         <Icon name="pause" className="h-3 w-3" />
-        {killed ? "Re-enable agent" : "Kill switch"}
+        {killed ? "Re-enable" : "Kill switch"}
       </button>
 
-      <p className="mt-2.5 text-[10px] leading-relaxed text-[var(--faint)]">
-        {killed ? (
-          <>
-            No action of any kind. Payments are still ingested and diagnosed, so
-            you can see what is arriving.
-            {controls.disabled_reason && (
-              <span className="block mt-1 text-rose-600">
-                {controls.disabled_reason}
-              </span>
-            )}
-          </>
-        ) : reviewing ? (
-          "Decides and records everything, executes nothing. The full audit trail is produced before the agent is given authority to act."
-        ) : (
-          "Executes approved decisions within the merchant guardrails. Risk blocks, opt-outs and attempt caps still apply."
-        )}
+      <p className="mt-1.5 text-[10px] leading-snug text-[var(--faint)]">
+        {killed
+          ? "No action of any kind. Payments still ingested and diagnosed."
+          : reviewing
+            ? "Records the full trail. Executes nothing."
+            : "Acts within guardrails. Risk blocks and opt-outs still apply."}
       </p>
     </div>
   );

@@ -27,6 +27,7 @@ from salvage.config import settings
 from salvage.controls import AgentMode, controls
 from salvage.economics import ACTION_COSTS, DEFAULT_POLICY, RecoveryAction
 from salvage.integrations import llm, razorpay_client
+from salvage.learning import report as learning_report
 from salvage.ml import predict
 from salvage.pipeline import process_batch, record_outcomes
 from salvage.simulator.generate import generate_events
@@ -448,6 +449,21 @@ def exceptions() -> dict[str, Any]:
         "by_rule": grouped,
         "exceptions": [dict(r) for r in rows],
     }
+
+
+@app.get("/api/learning")
+def learning() -> dict[str, Any]:
+    """Hold the system's own economic assumptions to account.
+
+    Every expected value rests on a hand-authored effectiveness matrix. This
+    compares each entry against what actually happened, and says which ones the
+    data no longer supports.
+
+    Reported, never auto-applied: refitting the constants that govern spending
+    from a few hundred outcomes would let a bad fortnight teach the system to
+    stop recovering, with no human in the path.
+    """
+    return learning_report()
 
 
 @app.get("/api/evaluate")

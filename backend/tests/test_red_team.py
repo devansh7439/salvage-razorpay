@@ -92,7 +92,7 @@ class TestDoubleCharge:
         def worker() -> None:
             try:
                 process_batch(events)
-            except BaseException as exc:  # noqa: BLE001
+            except BaseException as exc:
                 errors.append(exc)
 
         threads = [threading.Thread(target=worker) for _ in range(3)]
