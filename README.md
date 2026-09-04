@@ -248,10 +248,23 @@ Razorpay" is only credible if the live path has run at least once:
 python -m salvage.verify_live
 ```
 
-It creates a **real Test Mode Payment Link**, generates a **real model-written
-Hinglish message**, exercises signature enforcement, and writes a receipt to
-`data/live_verification.txt`. Anything unconfigured reports `SKIPPED` rather
-than quietly passing. Signature enforcement passes with no credentials at all.
+It calls the real APIs and writes a receipt to `data/live_verification.txt`,
+reporting each integration as PASS, FAIL, or SKIPPED. Those three are kept
+distinct on purpose: an unconfigured integration reports `SKIPPED` rather than
+quietly passing, and one that was configured, called, and refused reports
+`FAIL` rather than being mistaken for a missing key.
+
+All three paths have been exercised live - a genuine `rzp.io` Payment Link
+against Razorpay Test Mode, a model-written Hinglish message from Groq, and
+signature enforcement, which needs no credentials and passes on a clean clone.
+
+**The checked-in receipt currently shows Payment Links as `FAIL`.** That is
+Razorpay's Test Mode rate limiter, tripped while measuring the per-event API
+cost that motivated the provenance gate described under *Going live* - Test
+Mode allows 30 Payment Links per account in total. It clears with time, and a
+fresh account passes on the first run. The receipt is left as it is rather
+than regenerated at a convenient moment, because a verification script whose
+output is curated proves nothing.
 
 ---
 
@@ -308,7 +321,7 @@ pip install -r backend/requirements.txt
 cd backend
 python -m salvage.ml.train      # trains + calibrates, ~1 min
 python -m salvage.evaluate      # prints the comparison table above
-python -m pytest tests/ -q      # 49 tests
+python -m pytest tests/ -q      # 217 tests
 
 uvicorn salvage.main:app --port 8099
 ```
@@ -374,7 +387,7 @@ backend/salvage/
   ml/                features · calibrated training · inference
   simulator/         event generator · counterfactual outcome oracle
   integrations/      Razorpay Payment Links · provider-agnostic LLM
-backend/tests/       187 tests, guardrails first, hermetic by default
+backend/tests/       217 tests, guardrails first, hermetic by default
 frontend/            Next.js dashboard, six views
 INCIDENTS.md         engineering log — what broke, why, and the fix
 ```

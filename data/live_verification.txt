@@ -1,7 +1,7 @@
 ====================================================================
   SALVAGE - LIVE INTEGRATION VERIFICATION
 ====================================================================
-  2026-09-04T16:13:30+00:00
+  2026-09-04T16:46:53+00:00
 
   razorpay   live_test_mode
   llm        live:qwen/qwen3.8-27b
@@ -11,7 +11,7 @@
 --------------------------------------------------------------------
   key id         rzp_test_TXw...
   amount         1000 paise (Rs 10.00)
-  reference_id   slv_pay_lv158d83a6_0a9ce7cbbfe84fbe
+  reference_id   slv_pay_lv713a8b08_93c279fc9eb6697d
   calling client.payment_link.create(...)
 
   FAILED - Too many requests
@@ -25,7 +25,7 @@
   provider       llm:qwen/qwen3.8-27b
 
   GENERATED MESSAGE
-    "Gaurav bhai, aapka card is payment pe use nahi ho paaya, koi baat nahi. Aap is link se pay kar sakte ho: https://rzp.io/i/example"
+    "Gaurav bhai, aapki card se payment process nahi ho payi, koi baat nahi. Aap is link se directly pay kar sakte ho: https://rzp.io/i/example"
 
   ^ written by the model at request time, not a stored string.
 
