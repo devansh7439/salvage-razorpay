@@ -33,7 +33,9 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
 
@@ -43,6 +45,12 @@ from salvage.taxonomy import Classification, FailureClass
 logger = logging.getLogger(__name__)
 
 REQUEST_TIMEOUT = 20.0
+
+#: Matches the generator's budget for the same reason: a reasoning model spends
+#: this allowance on its chain of thought before emitting any JSON, and returns
+#: an empty string if it runs out first. 220 was enough for a plain model and
+#: silently produced zero diagnoses on a reasoning one.
+MAX_TOKENS = 600
 
 #: Classes the model may propose.
 #:
@@ -76,6 +84,52 @@ MIN_CONFIDENCE = 0.70
 #: Autonomy ceiling for AI-derived diagnoses, as a fraction of the merchant's
 #: normal limit. A guess earns less rope than a documented match.
 AI_AUTONOMY_FRACTION = 0.25
+
+#: Consecutive failures after which the model is left alone for this process.
+#:
+#: This stage runs once per *undiagnosable* payment, serially, and blocks the
+#: batch for up to REQUEST_TIMEOUT on each one. A provider that is rate-limiting
+#: or hanging therefore turns a thousand-payment run into minutes of dead time -
+#: in front of whoever is watching - to buy coverage the system is explicitly
+#: willing to do without.
+#:
+#: Skipping it is safe by construction: a payment the model does not classify is
+#: reported as an exception, which is exactly what happened before this module
+#: existed. So the right response to a provider that keeps failing is to stop
+#: asking it.
+BREAKER_THRESHOLD = 5
+
+_breaker_lock = threading.Lock()
+_consecutive_failures = 0
+
+
+def _breaker_open() -> bool:
+    """Whether the provider has failed often enough to stop calling it."""
+    with _breaker_lock:
+        return _consecutive_failures >= BREAKER_THRESHOLD
+
+
+def _record_call(ok: bool) -> None:
+    global _consecutive_failures
+    with _breaker_lock:
+        if ok:
+            _consecutive_failures = 0
+            return
+        _consecutive_failures += 1
+        if _consecutive_failures == BREAKER_THRESHOLD:
+            logger.warning(
+                "Diagnosis model failed %d times in a row; skipping it for the "
+                "rest of this process. Undiagnosable payments are reported as "
+                "exceptions, which is the behaviour without a model at all.",
+                BREAKER_THRESHOLD,
+            )
+
+
+def reset_breaker() -> None:
+    """Close the breaker again. For tests, and for a deliberate retry."""
+    global _consecutive_failures
+    with _breaker_lock:
+        _consecutive_failures = 0
 
 SYSTEM_PROMPT = """You classify failed Indian card and UPI payments for a recovery system.
 
@@ -208,6 +262,20 @@ def _validate(payload: dict) -> AIDiagnosis:
 
 def _call(prompt: str) -> str | None:
     """One chat-completions request. None on any failure."""
+    body: dict[str, Any] = {
+        "model": settings.llm_model,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+        # Low temperature: this is a classification, not composition.
+        "temperature": 0.1,
+        "max_tokens": MAX_TOKENS,
+        "response_format": {"type": "json_object"},
+    }
+    if settings.llm_reasoning_effort:
+        body["reasoning_effort"] = settings.llm_reasoning_effort
+
     try:
         response = httpx.post(
             f"{settings.llm_base_url.rstrip('/')}/chat/completions",
@@ -215,23 +283,29 @@ def _call(prompt: str) -> str | None:
                 "Authorization": f"Bearer {settings.llm_api_key}",
                 "Content-Type": "application/json",
             },
-            json={
-                "model": settings.llm_model,
-                "messages": [
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                # Low temperature: this is a classification, not composition.
-                "temperature": 0.1,
-                "max_tokens": 220,
-                "response_format": {"type": "json_object"},
-            },
+            json=body,
             timeout=REQUEST_TIMEOUT,
         )
         response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"]
+        choice = response.json()["choices"][0]
+        content = (choice["message"].get("content") or "").strip()
+        if not content:
+            # Returning "" here would reach the JSON parser as unparseable and
+            # be logged as a malformed model reply, sending a reader after a
+            # prompt bug that does not exist. The real cause is budget.
+            logger.warning(
+                "Diagnosis model returned empty content (finish_reason=%s); "
+                "treating as unavailable. Raise MAX_TOKENS or set "
+                "LLM_REASONING_EFFORT=low for reasoning models.",
+                choice.get("finish_reason"),
+            )
+            _record_call(False)
+            return None
+        _record_call(True)
+        return content
     except Exception as exc:
         logger.warning("Diagnosis model unavailable: %s", exc)
+        _record_call(False)
         return None
 
 
@@ -242,6 +316,7 @@ def diagnose(
     error_source: str | None,
     error_step: str | None,
     method: str | None = None,
+    allow_live: bool = True,
 ) -> AIDiagnosis:
     """Ask the model to classify a failure the taxonomy could not.
 
@@ -252,6 +327,27 @@ def diagnose(
     """
     if not settings.llm_live:
         return AIDiagnosis(None, 0.0, "", False, "no LLM configured", "none")
+
+    # Simulated events are refused a live diagnosis, and this one is not about
+    # speed. A diagnosis changes which action the policy engine picks, so it
+    # changes the outcome an evaluation measures. Under a provider rate limit
+    # some events in a batch would receive a proposal and others would not,
+    # decided by nothing more than when the limit happened to trip - which
+    # makes a paired comparison irreproducible and its arms unequal.
+    #
+    # It also means adding credentials silently changed what the evaluation
+    # measured: rules-only before, rules-plus-intermittent-AI after, from the
+    # same code and the same seed. Holding simulated runs to the deterministic
+    # path keeps the number comparable across machines and across the day.
+    if not allow_live:
+        return AIDiagnosis(
+            None, 0.0, "", False, "simulated event: live diagnosis skipped", "none"
+        )
+
+    if _breaker_open():
+        return AIDiagnosis(
+            None, 0.0, "", False, "diagnosis model circuit breaker open", "none"
+        )
 
     prompt = "\n".join(
         [

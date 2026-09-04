@@ -34,6 +34,11 @@ class Settings(BaseSettings):
             Ollama, and others - the contract is the same across all of them.
         llm_api_key: Bearer token for that endpoint.
         llm_model: Model identifier to request.
+        llm_reasoning_effort: Optional reasoning budget hint ("low"/"medium"/
+            "high"). Only sent when set, because it is not part of the base
+            OpenAI-compatible contract and some providers reject unknown fields.
+            Needed for reasoning models, which otherwise spend the whole token
+            budget thinking and return empty content.
         database_path: SQLite file location.
         model_path: Serialised propensity model.
     """
@@ -51,7 +56,8 @@ class Settings(BaseSettings):
 
     llm_base_url: str = ""
     llm_api_key: str = ""
-    llm_model: str = "llama-3.3-70b-versatile"
+    llm_model: str = "openai/gpt-oss-120b"
+    llm_reasoning_effort: str = ""
 
     database_path: Path = DATA_DIR / "salvage.db"
     model_path: Path = DATA_DIR / "recovery_model.joblib"

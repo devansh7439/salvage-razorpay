@@ -20,7 +20,21 @@ from typing import Any
 from salvage.economics import RecoveryAction
 from salvage.integrations import llm, razorpay_client
 from salvage.policy import PolicyDecision
+from salvage.provenance import is_simulated
 from salvage.taxonomy import Classification
+
+#: Execution statuses meaning the intervention actually reached the world.
+#:
+#: The distinction matters because a *decision* is not an action. Review-first
+#: mode records decisions and executes nothing; the kill switch stops execution
+#: mid-batch; a payment link the Razorpay API refuses to create never reaches
+#: the customer. In each case the payment was left exactly as it was found, so
+#: any money arriving afterwards arrived on its own - and crediting it to the
+#: system would be claiming revenue it did not cause, which is the one thing
+#: this project exists to refuse.
+#:
+#: FAILED and SKIPPED are therefore excluded: both mean nothing happened.
+ACTED_STATUSES: frozenset[str] = frozenset({"EXECUTED", "SCHEDULED", "QUEUED"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +133,7 @@ def execute(
             failure_class=failure_class,
             action=action,
             payment_link=link.short_url,
+            allow_live=not is_simulated(event),
         )
         return ExecutionResult(
             action=action,
@@ -138,6 +153,7 @@ def execute(
             failure_class=failure_class,
             action=action,
             payment_link=None,
+            allow_live=not is_simulated(event),
         )
         return ExecutionResult(
             action=action,

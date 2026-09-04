@@ -23,12 +23,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from salvage.config import settings
+from salvage.provenance import is_simulated
 
 logger = logging.getLogger(__name__)
 
 #: Razorpay caps Payment Link reference ids. Keys are truncated to fit.
 MAX_REFERENCE_ID = 40
-
 
 @dataclass(frozen=True, slots=True)
 class PaymentLinkResult:
@@ -120,6 +120,25 @@ def create_payment_link(
     if not settings.razorpay_live:
         return _fixture_link(event, reference)
 
+    # A simulated payment never gets a real link, however the credentials are
+    # set. Two reasons, and the second is the one that bites.
+    #
+    # It is wrong on its own terms: a fabricated customer who never attempted a
+    # payment should not have a genuine hosted checkout page created in their
+    # name, even in Test Mode.
+    #
+    # And Razorpay's Test Mode allows 30 Payment Links per account, total. A
+    # 3000-event evaluation batch would exhaust that in the first second and
+    # spend the rest of the run collecting rate-limit errors - so the moment
+    # credentials were added, the batch demo this repo is built around would
+    # break. Fixture mode is the correct behaviour here, not a fallback.
+    if is_simulated(event):
+        logger.debug(
+            "Simulated event %s: using a fixture link despite live credentials.",
+            event.id,
+        )
+        return _fixture_link(event, reference)
+
     try:
         response = _client().payment_link.create(payload)
         return PaymentLinkResult(
@@ -169,9 +188,28 @@ def verify_webhook_signature(body: bytes, signature: str) -> bool:
     through response timing.
     """
     if not settings.razorpay_webhook_secret:
+        # Unsigned ingest is a demo convenience, and it is only defensible
+        # while the system cannot do anything with what it ingests. Without
+        # Razorpay credentials every action is a deterministic fixture that
+        # never leaves the process, so an unauthenticated caller can at worst
+        # add rows to a local SQLite file.
+        #
+        # With credentials present that is no longer true: the same request
+        # creates real Payment Links and sends real messages. A misconfigured
+        # deployment - live keys, forgotten webhook secret - is exactly the
+        # case this check exists for, and it is not one to fail open on.
+        if settings.razorpay_live:
+            logger.error(
+                "Razorpay credentials are configured but RAZORPAY_WEBHOOK_SECRET "
+                "is not. Refusing unsigned webhooks: this deployment can take "
+                "real actions, so unauthenticated ingest would let anyone who "
+                "knows the URL issue payment links to numbers of their choosing."
+            )
+            return False
+
         logger.warning(
             "No RAZORPAY_WEBHOOK_SECRET set - signature verification skipped. "
-            "Acceptable locally, never in production."
+            "Acceptable locally in fixture mode, never in production."
         )
         return True
 

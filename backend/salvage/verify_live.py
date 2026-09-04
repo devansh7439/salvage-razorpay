@@ -25,6 +25,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from uuid import uuid4
 
 from salvage.config import settings
 from salvage.economics import RecoveryAction
@@ -45,7 +46,15 @@ class Receipt:
         self.lines: list[str] = []
 
     def __call__(self, line: str = "") -> None:
-        print(line)
+        # The Windows console defaults to cp1252, which cannot encode much of
+        # what a model may emit. A verification script that dies printing its
+        # own success is worse than useless, so the terminal degrades while the
+        # saved receipt keeps the exact bytes.
+        try:
+            print(line)
+        except UnicodeEncodeError:
+            enc = sys.stdout.encoding or "ascii"
+            print(line.encode(enc, "replace").decode(enc))
         self.lines.append(line)
 
     def save(self, path: Path) -> None:
@@ -54,10 +63,19 @@ class Receipt:
 
 
 def _probe_event() -> SimpleNamespace:
-    """A realistic expired-card failure to drive the live calls."""
+    """A realistic expired-card failure to drive the live calls.
+
+    The payment id carries a random suffix because `reference_id` is derived
+    from it deterministically, and Razorpay rejects a Payment Link whose
+    reference_id it has already seen. A fixed id would make this script pass
+    once and fail on every subsequent run - which is precisely the opposite of
+    the "safe to run repeatedly" promise in the module docstring, and would
+    read as a broken integration rather than a working idempotency guard.
+    """
+    unique = uuid4().hex[:8]
     return SimpleNamespace(
-        id="pay_liveverify00001",
-        order_id="order_liveverify0001",
+        id=f"pay_lv{unique}",
+        order_id=f"order_lv{unique}",
         amount=PROBE_AMOUNT_PAISE,
         currency="INR",
         customer_name="Gaurav Kumar",
@@ -67,7 +85,7 @@ def _probe_event() -> SimpleNamespace:
     )
 
 
-def verify_razorpay(out: Receipt) -> bool:
+def verify_razorpay(out: Receipt) -> str:
     """Create a real Payment Link in Test Mode."""
     out("-" * 68)
     out("  1. RAZORPAY PAYMENT LINKS")
@@ -78,7 +96,7 @@ def verify_razorpay(out: Receipt) -> bool:
         out("    Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in .env")
         out("    (Test Mode keys: dashboard.razorpay.com -> Settings -> API Keys)")
         out()
-        return False
+        return "SKIPPED / no keys"
 
     event = _probe_event()
     payload = razorpay_client.build_payment_link_payload(event)
@@ -93,7 +111,7 @@ def verify_razorpay(out: Receipt) -> bool:
     if not result.ok:
         out(f"  FAILED - {result.error}")
         out()
-        return False
+        return "FAIL / live call rejected"
 
     out(f"  OK   provider   {result.provider}")
     out(f"       link id    {result.link_id}")
@@ -101,10 +119,10 @@ def verify_razorpay(out: Receipt) -> bool:
     out()
     out("  ^ open that URL - it is a real Razorpay hosted checkout page.")
     out()
-    return True
+    return "PASS"
 
 
-def verify_llm(out: Receipt, payment_link: str | None) -> bool:
+def verify_llm(out: Receipt, payment_link: str | None) -> str:
     """Generate a real Hinglish recovery message."""
     out("-" * 68)
     out("  2. RECOVERY MESSAGE GENERATION")
@@ -125,7 +143,7 @@ def verify_llm(out: Receipt, payment_link: str | None) -> bool:
         )
         out(f'    "{message.text}"')
         out()
-        return False
+        return "SKIPPED / no keys"
 
     out(f"  endpoint       {settings.llm_base_url}")
     out(f"  model          {settings.llm_model}")
@@ -148,9 +166,11 @@ def verify_llm(out: Receipt, payment_link: str | None) -> bool:
 
     if not used_model:
         out("  WARNING - fell back to a template. The model call did not succeed;")
-        out("  check the endpoint, key, and model name.")
+        out("  check the endpoint, key, and model name. A model that returns")
+        out("  200 with empty content is usually a reasoning model out of budget;")
+        out("  set LLM_REASONING_EFFORT=low. Run with -v to see the reason.")
         out()
-        return False
+        return "FAIL / fell back to template"
 
     if payment_link and payment_link not in message.text:
         out("  WARNING - the model omitted the payment link, so the message is")
@@ -159,7 +179,7 @@ def verify_llm(out: Receipt, payment_link: str | None) -> bool:
 
     out("  ^ written by the model at request time, not a stored string.")
     out()
-    return True
+    return "PASS"
 
 
 def verify_signature_enforcement(out: Receipt) -> bool:
@@ -218,27 +238,30 @@ def main() -> int:
     out(f"  llm        {llm.mode()}")
     out()
 
-    link_ok = verify_razorpay(out)
+    link_status = verify_razorpay(out)
     link_url = None
-    if link_ok:
+    if link_status == "PASS":
         link_url = next(
             (ln.split("SHORT URL")[-1].strip() for ln in out.lines if "SHORT URL" in ln),
             None,
         )
 
-    llm_ok = verify_llm(out, link_url)
+    llm_status = verify_llm(out, link_url)
     sig_ok = verify_signature_enforcement(out)
 
     out("=" * 68)
     out("  SUMMARY")
     out("=" * 68)
-    out(f"  Razorpay Payment Link (live)   {'PASS' if link_ok else 'SKIPPED / no keys'}")
-    out(f"  Model-written message (live)   {'PASS' if llm_ok else 'SKIPPED / no keys'}")
+    out(f"  Razorpay Payment Link (live)   {link_status}")
+    out(f"  Model-written message (live)   {llm_status}")
     out(f"  Webhook signature enforcement  {'PASS' if sig_ok else 'FAIL'}")
     out()
 
-    if link_ok and llm_ok:
+    if link_status == "PASS" and llm_status == "PASS":
         out("  All live paths verified. Screenshot this for the pitch.")
+    elif "FAIL" in link_status or "FAIL" in llm_status:
+        out("  A configured integration was called and did not succeed. This is")
+        out("  a real failure, not a missing credential - see the section above.")
     else:
         out("  Add the missing credentials to .env and re-run.")
         out("  Everything else in Salvage runs without them.")

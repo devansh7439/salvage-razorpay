@@ -331,8 +331,26 @@ RAZORPAY_WEBHOOK_SECRET=xxx         # enables signature enforcement
 
 LLM_BASE_URL=https://api.groq.com/openai/v1   # any OpenAI-compatible endpoint
 LLM_API_KEY=xxx                               # Groq, OpenRouter, Together, Ollama…
-LLM_MODEL=llama-3.3-70b-versatile
+LLM_MODEL=openai/gpt-oss-120b
+LLM_REASONING_EFFORT=low                      # reasoning models only; else blank
 ```
+
+**Simulated payments never reach a live service.** Credentials switch on the
+live path for real payments only: an event carrying the simulator's latent
+ground truth (`_true_*`) gets a fixture link and template copy however the keys
+are set. That is not a convenience toggle, it is the only way the demo and the
+evaluation survive contact with real quotas.
+
+Razorpay Test Mode allows 30 Payment Links per account, and Groq's free tier
+allows 200k tokens per day. One 3000-event evaluation batch would want 3000
+links and roughly 2.1M tokens - so ungated, adding keys would exhaust the link
+cap in the first second and the token budget about 285 events in, then spend
+the rest of the run collecting rate-limit errors. It would also make the run
+non-reproducible, since which events got an AI diagnosis would depend on when
+the limit happened to trip.
+
+See `salvage/provenance.py`. The live path is exercised by `verify_live` and by
+real webhook deliveries, which is where it belongs.
 
 ---
 

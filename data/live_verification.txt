@@ -1,33 +1,37 @@
 ====================================================================
   SALVAGE - LIVE INTEGRATION VERIFICATION
 ====================================================================
-  2026-09-03T20:21:22+00:00
+  2026-09-04T16:13:30+00:00
 
-  razorpay   fixture
-  llm        template
+  razorpay   live_test_mode
+  llm        live:qwen/qwen3.8-27b
 
 --------------------------------------------------------------------
   1. RAZORPAY PAYMENT LINKS
 --------------------------------------------------------------------
-  SKIPPED - no credentials.
-    Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in .env
-    (Test Mode keys: dashboard.razorpay.com -> Settings -> API Keys)
+  key id         rzp_test_TXw...
+  amount         1000 paise (Rs 10.00)
+  reference_id   slv_pay_lv158d83a6_0a9ce7cbbfe84fbe
+  calling client.payment_link.create(...)
+
+  FAILED - Too many requests
 
 --------------------------------------------------------------------
   2. RECOVERY MESSAGE GENERATION
 --------------------------------------------------------------------
-  SKIPPED - no credentials.
-    Set LLM_BASE_URL and LLM_API_KEY in .env
-    Any OpenAI-compatible endpoint works (Groq, OpenRouter, ...)
+  endpoint       https://api.groq.com/openai/v1
+  model          qwen/qwen3.8-27b
 
-  Template fallback currently produces:
-    "Hi Gaurav, aapka Rs 10 ka payment nahi ho paya kyunki aapka card is payment ke liye kaam nahi kar raha. Koi baat nahi, yahan se dobara try kar lijiye: https://rzp.io/i/example"
+  provider       llm:qwen/qwen3.8-27b
+
+  GENERATED MESSAGE
+    "Gaurav bhai, aapka card is payment pe use nahi ho paaya, koi baat nahi. Aap is link se pay kar sakte ho: https://rzp.io/i/example"
+
+  ^ written by the model at request time, not a stored string.
 
 --------------------------------------------------------------------
   3. WEBHOOK SIGNATURE ENFORCEMENT
 --------------------------------------------------------------------
-  Using a local secret for the demonstration, since
-  RAZORPAY_WEBHOOK_SECRET is not set.
   genuine signature accepted   True
   forged signature rejected    True
 
@@ -38,10 +42,10 @@
 ====================================================================
   SUMMARY
 ====================================================================
-  Razorpay Payment Link (live)   SKIPPED / no keys
-  Model-written message (live)   SKIPPED / no keys
+  Razorpay Payment Link (live)   FAIL / live call rejected
+  Model-written message (live)   PASS
   Webhook signature enforcement  PASS
 
-  Add the missing credentials to .env and re-run.
-  Everything else in Salvage runs without them.
+  A configured integration was called and did not succeed. This is
+  a real failure, not a missing credential - see the section above.
 

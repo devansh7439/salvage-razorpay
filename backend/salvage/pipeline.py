@@ -26,9 +26,10 @@ from salvage import bandit, db
 from salvage import diagnosis as ai_diagnosis
 from salvage.controls import controls
 from salvage.economics import DEFAULT_POLICY, MerchantPolicy, RecoveryAction
-from salvage.executor import execute
+from salvage.executor import ACTED_STATUSES, execute
 from salvage.ml.predict import predict_propensity_batch
 from salvage.policy import RecoveryContext, decide
+from salvage.provenance import is_simulated
 from salvage.taxonomy import classify
 from salvage.verification import recovered_event_ids
 
@@ -316,6 +317,7 @@ def _write_chunk(
                     getattr(event, "error_source", None),
                     getattr(event, "error_step", None),
                     getattr(event, "method", None),
+                    allow_live=not is_simulated(event),
                 )
                 if proposal.provider != "none":
                     trail.append(
@@ -518,6 +520,9 @@ def _record_outcome_chunk(events: list[Any]) -> int:
         # made. The unscoped version loaded the whole table on each call.
         ids = [e.id for e in events]
         rows: dict[str, str] = {}
+        performed: dict[str, str] = {}
+        acted = ",".join("?" * len(ACTED_STATUSES))
+        statuses = tuple(ACTED_STATUSES)
         for i in range(0, len(ids), PARAM_BATCH):
             window = ids[i : i + PARAM_BATCH]
             placeholders = ",".join("?" * len(window))
@@ -531,11 +536,40 @@ def _record_outcome_chunk(events: list[Any]) -> int:
                     ).fetchall()
                 }
             )
+            # What was actually carried out, which is not the same as what was
+            # decided. Scoped to this chunk for the same reason as above.
+            performed.update(
+                {
+                    r["event_id"]: r["action"]
+                    for r in conn.execute(
+                        "SELECT event_id, action FROM executions"
+                        f" WHERE event_id IN ({placeholders})"
+                        f" AND status IN ({acted})",
+                        (*window, *statuses),
+                    ).fetchall()
+                }
+            )
 
         for event in events:
             action_name = rows.get(event.id)
             if action_name is None:
                 continue
+
+            # Adjudicate what the system *did*, not what it decided to do.
+            #
+            # A decision that never executed changed nothing for the customer:
+            # review-first mode holds every action for approval, the kill
+            # switch stops execution mid-batch, and a payment link the API
+            # refuses to create is never delivered. Scoring those against the
+            # intervention's effectiveness would report recovery the system
+            # caused while it was, by construction, doing nothing at all -
+            # the same error as claiming organic recovery, one level down.
+            decided_action = action_name
+            action_name = performed.get(event.id, RecoveryAction.DROP.value)
+            unexecuted = (
+                decided_action != RecoveryAction.DROP.value
+                and action_name == RecoveryAction.DROP.value
+            )
 
             classification = classify(
                 event.error_reason,
@@ -574,12 +608,20 @@ def _record_outcome_chunk(events: list[Any]) -> int:
                         " (would have recovered organically - no credit claimed)"
                         if outcome.would_have_recovered_organically
                         else ""
+                    )
+                    + (
+                        f" [{decided_action} was decided but never executed, so "
+                        "this was adjudicated as no intervention]"
+                        if unexecuted
+                        else ""
                     ),
                     {
                         "recovered": outcome.recovered,
                         "recovered_paise": outcome.recovered_paise,
                         "organic": outcome.would_have_recovered_organically,
                         "incremental_paise": outcome.incremental_paise,
+                        "decided_action": decided_action,
+                        "adjudicated_action": action_name,
                     },
                 )
             )

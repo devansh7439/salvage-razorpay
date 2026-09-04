@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import threading
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException, Request
@@ -26,6 +27,7 @@ from salvage import bandit, db
 from salvage.config import settings
 from salvage.controls import AgentMode, controls
 from salvage.economics import ACTION_COSTS, DEFAULT_POLICY, RecoveryAction
+from salvage.executor import ACTED_STATUSES
 from salvage.integrations import llm, razorpay_client
 from salvage.learning import report as learning_report
 from salvage.ml import predict
@@ -167,7 +169,20 @@ async def webhook(
     if not razorpay_client.verify_webhook_signature(raw, x_razorpay_signature):
         raise HTTPException(status_code=401, detail="Invalid webhook signature")
 
-    payload = json.loads(raw)
+    # A body that is not JSON is the sender's error, not ours. Letting the
+    # decode raise returns a 500, and Razorpay retries webhooks on any non-2xx
+    # - so a single malformed delivery would be redelivered indefinitely.
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"Malformed JSON body: {exc.msg}"
+        ) from None
+
+    if not isinstance(payload, dict):
+        raise HTTPException(
+            status_code=400, detail="Webhook body must be a JSON object"
+        )
 
     # Settlement events close the loop. Without this branch the system issues
     # payment links and never learns whether any of them were paid - every
@@ -191,35 +206,97 @@ async def webhook(
 
     from types import SimpleNamespace
 
+    customer_id = entity.get("customer_id") or entity.get("email", "unknown")
+    order_id = entity.get("order_id")
+    when = _event_time(entity.get("created_at"))
+    history = _known_history(customer_id, order_id)
+
     event = SimpleNamespace(
         id=entity.get("id"),
-        order_id=entity.get("order_id"),
+        order_id=order_id,
         amount=entity.get("amount", 0),
         currency=entity.get("currency", "INR"),
         method=entity.get("method"),
         status="failed",
-        created_at=str(entity.get("created_at", "")),
+        created_at=when.isoformat(),
         error_code=entity.get("error_code"),
         error_description=entity.get("error_description"),
         error_reason=entity.get("error_reason"),
         error_source=entity.get("error_source"),
         error_step=entity.get("error_step"),
-        customer_id=entity.get("customer_id") or entity.get("email", "unknown"),
+        customer_id=customer_id,
         customer_name=(entity.get("notes") or {}).get("name", "Customer"),
         customer_phone=entity.get("contact", ""),
         customer_email=entity.get("email", ""),
+        # Merchant-side history the webhook does not carry. A real deployment
+        # reads these from the merchant's own payment records; the values here
+        # are neutral placeholders, and the propensity on this path is
+        # correspondingly less informed than on a batch backed by real
+        # history. Stated rather than disguised: `customer_success_rate` is
+        # one of the two strongest features in the model.
         customer_success_rate=0.6,
         customer_tenure_days=180,
-        prior_payment_count=3,
-        prior_failure_count=1,
         hours_since_last_success=48.0,
-        attempt_number=1,
-        hour_of_day=12,
-        day_of_week=2,
+        # These, by contrast, are genuinely knowable: the payload carries the
+        # time, and we have seen this customer's earlier failures ourselves.
+        prior_payment_count=history["prior_payments"],
+        prior_failure_count=history["prior_failures"],
+        attempt_number=history["attempt_number"],
+        hour_of_day=when.hour,
+        day_of_week=when.weekday(),
     )
 
     result = process_batch([event])
     return {"accepted": True, **result}
+
+
+def _event_time(created_at: Any) -> datetime:
+    """Razorpay sends a Unix timestamp. Fall back to now if it is missing.
+
+    The hour and weekday were previously hardcoded to noon on a Wednesday
+    while the real time sat unread in the payload two fields away.
+    """
+    try:
+        return datetime.fromtimestamp(int(created_at), tz=timezone.utc)
+    except (TypeError, ValueError):
+        return datetime.now(timezone.utc)
+
+
+def _known_history(customer_id: str, order_id: str | None) -> dict[str, int]:
+    """The part of a customer's history this system has actually observed.
+
+    Only failures reach us, so `prior_payments` counts the earlier failures we
+    later saw settle - a genuine observed success - rather than the customer's
+    whole track record, which lives in the merchant's own records.
+
+    `attempt_number` counts previous failures against the same order, which is
+    what the attempt cap is meant to bound.
+    """
+    with db.connect() as conn:
+        failures = conn.execute(
+            "SELECT COUNT(*) n FROM events WHERE customer_id = ?", (customer_id,)
+        ).fetchone()["n"]
+        recovered = conn.execute(
+            """
+            SELECT COUNT(*) n FROM outcomes o
+            JOIN events e ON e.id = o.event_id
+            WHERE e.customer_id = ? AND o.recovered = 1
+            """,
+            (customer_id,),
+        ).fetchone()["n"]
+        same_order = (
+            conn.execute(
+                "SELECT COUNT(*) n FROM events WHERE order_id = ?", (order_id,)
+            ).fetchone()["n"]
+            if order_id
+            else 0
+        )
+
+    return {
+        "prior_failures": failures,
+        "prior_payments": recovered,
+        "attempt_number": same_order + 1,
+    }
 
 
 @app.post("/api/reconcile")
@@ -234,8 +311,16 @@ def reconcile_payments(limit: int = 100) -> dict[str, Any]:
 
 
 @app.post("/api/simulate/load")
-def load_batch(execute_actions: bool = True) -> dict[str, Any]:
-    """Reset the database and run the demo batch end to end."""
+def load_batch(execute_actions: bool | None = None) -> dict[str, Any]:
+    """Reset the database and run the demo batch end to end.
+
+    `execute_actions` defaults to None so the merchant's own controls govern
+    the run. Hardcoding it to True here overrode the kill switch and
+    review-first mode at the top level - execution was still suppressed
+    per-chunk, so the control held, but the run then reported `executed: true`
+    while executing nothing, which is the kind of discrepancy that makes a
+    reviewer distrust every other number on the page.
+    """
     global _evaluation_cache
 
     db.reset_db()
@@ -286,9 +371,25 @@ def metrics() -> dict[str, Any]:
             "SELECT COUNT(*) AS n FROM decisions WHERE is_exception = 1"
         ).fetchone()["n"]
 
+        # Spend is what was actually carried out, not what was decided on.
+        # Costing decisions instead reported an intervention budget the
+        # merchant never spent whenever execution was withheld - review-first
+        # mode, the kill switch, or a link the API refused to create - which
+        # sat next to a correctly-zero recovery figure and made the pair look
+        # broken.
+        placeholders = ",".join("?" * len(ACTED_STATUSES))
+        executed_actions = {
+            r["action"]: r["n"]
+            for r in conn.execute(
+                "SELECT action, COUNT(*) AS n FROM executions"
+                f" WHERE status IN ({placeholders}) GROUP BY action",
+                tuple(ACTED_STATUSES),
+            ).fetchall()
+        }
+
         spend = sum(
             ACTION_COSTS[RecoveryAction(a)].total_paise * n
-            for a, n in actions.items()
+            for a, n in executed_actions.items()
             if a != "DROP"
         )
 
