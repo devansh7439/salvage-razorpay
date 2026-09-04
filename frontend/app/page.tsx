@@ -22,7 +22,7 @@ import { Badge, MetricCard } from "@/components/MetricCard";
 import { DecisionInspector } from "@/components/DecisionInspector";
 import { HonestyBand, IntegrationNotice } from "@/components/Explainer";
 import { Sidebar, View } from "@/components/Sidebar";
-import { Card, Icon, IconButton, Pill, Status, Th } from "@/components/ui";
+import { Card, Icon, IconButton, Pill, Th } from "@/components/ui";
 
 const ACTION_FILTERS = [
   "PAYMENT_LINK",
@@ -402,7 +402,9 @@ function QueueView({
                     {r.net_ev != null ? rupees(r.net_ev) : "—"}
                   </td>
                   <td className="px-4 py-3">
-                    <Status active={r.action !== "DROP"}>{r.action}</Status>
+                    <Badge className={ACTION_STYLE[r.action ?? ""] ?? ""}>
+                      {r.action}
+                    </Badge>
                   </td>
                   <td
                     className={`num px-4 py-3 text-right text-[13px] ${

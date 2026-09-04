@@ -1,4 +1,7 @@
-import { ReactNode } from "react";
+"use client";
+
+import { ReactNode, useState } from "react";
+import { Icon } from "./ui";
 
 /**
  * Pre-emptive answers to the three questions a sceptical reviewer asks.
@@ -9,8 +12,12 @@ import { ReactNode } from "react";
  * near-chance; the data is synthetic and says so. Each is the correct call and
  * each reads as a weakness if nobody explains it.
  *
- * A pitch can explain them, but only while the presenter is in the room - and
- * a repo gets reviewed without one. So the product explains itself.
+ * The first version put all three explanations on screen permanently, which
+ * buried the landing view under two hundred words of small grey type - a wall
+ * of documentation where a dashboard should be. The fix is to separate the
+ * *claim* from the *argument*: the three corrected figures stay visible at all
+ * times, because they are the point, and the reasoning behind them expands on
+ * demand.
  */
 export function HonestyBand({
   incremental,
@@ -27,43 +34,28 @@ export function HonestyBand({
   aucCeiling?: number;
   signalPct?: number;
 }) {
+  const [open, setOpen] = useState(false);
+
   return (
-    <section className="rounded-xl border border-[var(--border)] bg-white p-5">
-      <h2 className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--faint)]">
-        How to read these numbers
-      </h2>
-      <p className="mt-1 text-[12px] text-[var(--muted)]">
-        Three of the figures above are deliberately smaller than the ones a
-        recovery dashboard usually shows. Here is why.
-      </p>
+    <section className="rounded-xl border border-[var(--border)] bg-white">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-4 px-5 py-4 text-left transition hover:bg-[#fafafa]"
+      >
+        <span className="shrink-0 text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--faint)]">
+          How to read these
+        </span>
 
-      <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <Point
-          n="1"
-          title="Recovery is incremental, not gross"
-          headline={
-            <>
-              <span className="text-[var(--faint)] line-through">{gross}</span>{" "}
-              <span className="text-emerald-700">{incremental}</span>
-            </>
-          }
-        >
-          {organic} of that gross figure came from customers who would have
-          returned unprompted — for a bank outage, about a third do. Billing for
-          them is not recovery, so Salvage subtracts them and claims only what
-          it caused. It also <em>optimises</em> that same number, so it will not
-          spend to nudge someone already coming back.
-        </Point>
+        <div className="flex flex-1 flex-wrap items-center gap-x-6 gap-y-2">
+          <Claim label="incremental, not gross">
+            <span className="text-[var(--faint)] line-through">{gross}</span>{" "}
+            <span className="text-emerald-700">{incremental}</span>
+          </Claim>
 
-        <Point
-          n="2"
-          title="The model is scored against its ceiling"
-          headline={
-            aucCeiling ? (
+          <Claim label="AUC against its ceiling">
+            {aucCeiling ? (
               <>
-                <span className="text-[var(--text)]">
-                  {aucModel?.toFixed(3)}
-                </span>
+                <span>{aucModel?.toFixed(3)}</span>
                 <span className="text-[var(--faint)]">
                   {" "}
                   / {aucCeiling.toFixed(3)}
@@ -72,58 +64,92 @@ export function HonestyBand({
               </>
             ) : (
               <span className="text-[var(--faint)]">—</span>
-            )
-          }
-        >
-          Recovery outcomes are coin flips weighted by probability, so no model
-          can exceed the Bayes rate. We measured that ceiling by scoring the
-          oracle&apos;s true probabilities: <strong>0.629</strong>. An AUC of{" "}
-          <strong>0.575</strong> is {signalPct}% of the signal that exists, not
-          a near-chance model. A near-perfect score here would indicate a leak.
-        </Point>
+            )}
+          </Claim>
 
-        <Point
-          n="3"
-          title="Real taxonomy, simulated volume"
-          headline={
-            <>
-              <span className="text-emerald-700">48 real</span>
-              <span className="text-[var(--faint)]"> reasons</span>
-            </>
-          }
-        >
-          The failure taxonomy and the webhook contract are Razorpay&apos;s own,
-          transcribed from their docs and covered by tests against a real
-          <code className="mx-1 font-mono text-[10px] text-[var(--muted)]">
-            payment.failed
-          </code>
-          payload. Only the <em>volume and outcomes</em> are synthetic — and the
-          generator is built so the model cannot memorise it.
-        </Point>
-      </div>
+          <Claim label="taxonomy is real">
+            <span className="text-emerald-700">48</span>
+            <span className="text-[var(--faint)]"> documented reasons</span>
+          </Claim>
+        </div>
+
+        <span className="flex shrink-0 items-center gap-1 text-[11px] text-[var(--muted)]">
+          {open ? "Hide" : "Why"}
+          <Icon
+            name="chevron"
+            className={`h-3.5 w-3.5 transition-transform ${open ? "rotate-180" : ""}`}
+          />
+        </span>
+      </button>
+
+      {open && (
+        <div className="grid grid-cols-1 gap-4 border-t border-[var(--border)] p-5 lg:grid-cols-3">
+          <Point n="1" title="Recovery is incremental, not gross">
+            {organic} of that gross figure came from customers who would have
+            returned unprompted — for a bank outage, about a third do. Billing
+            for them is not recovery, so Salvage subtracts them and claims only
+            what it caused. It also <em>optimises</em> that same number, so it
+            will not spend to nudge someone already coming back.
+          </Point>
+
+          <Point n="2" title="The model is scored against its ceiling">
+            Recovery outcomes are coin flips weighted by probability, so no
+            model can exceed the Bayes rate. We measured that ceiling by scoring
+            the oracle&apos;s true probabilities: <strong>0.629</strong>. An AUC
+            of <strong>0.575</strong> is {signalPct}% of the signal that exists,
+            not a near-chance model. A near-perfect score would indicate a leak.
+          </Point>
+
+          <Point n="3" title="Real taxonomy, simulated volume">
+            The failure taxonomy and the webhook contract are Razorpay&apos;s
+            own, transcribed from their docs and covered by tests against a real
+            <code className="mx-1 font-mono text-[10px] text-[var(--muted)]">
+              payment.failed
+            </code>
+            payload. Only the <em>volume and outcomes</em> are synthetic — and
+            the generator is built so the model cannot memorise it.
+          </Point>
+        </div>
+      )}
     </section>
+  );
+}
+
+function Claim({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="min-w-0">
+      <div className="num text-[15px] font-semibold leading-tight">
+        {children}
+      </div>
+      <div className="mt-0.5 text-[10px] uppercase tracking-wider text-[var(--faint)]">
+        {label}
+      </div>
+    </div>
   );
 }
 
 function Point({
   n,
   title,
-  headline,
   children,
 }: {
   n: string;
   title: string;
-  headline: ReactNode;
   children: ReactNode;
 }) {
   return (
-    <div className="rounded-lg border border-[var(--border)] bg-[#fbfbfc] p-4">
+    <div>
       <div className="flex items-baseline gap-2">
         <span className="font-mono text-[10px] text-[var(--faint)]">{n}</span>
         <h3 className="text-[12px] font-semibold text-[var(--text)]">{title}</h3>
       </div>
-      <div className="num mt-2 text-[17px] font-semibold">{headline}</div>
-      <p className="mt-2 text-[11px] leading-relaxed text-[var(--muted)]">
+      <p className="mt-1.5 text-[11px] leading-relaxed text-[var(--muted)]">
         {children}
       </p>
     </div>
@@ -148,32 +174,28 @@ export function IntegrationNotice({
 
   if (!fixtures) {
     return (
-      <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 px-5 py-3.5 text-[12px] leading-relaxed text-emerald-800">
-        <span className="font-medium">Live integrations active</span> — payment
-        links are real Razorpay Test Mode links and recovery messages are
-        model-written at request time.
+      <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50/60 px-5 py-3 text-[12px] text-emerald-800">
+        <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+        <span className="font-medium">Live integrations active</span>
+        <span className="text-emerald-700/80">
+          — real Razorpay Test Mode links, model-written recovery copy.
+        </span>
       </div>
     );
   }
 
   return (
-    <div className="rounded-xl border border-[var(--border)] bg-white px-5 py-3.5">
-      <p className="text-[12px] leading-relaxed text-[var(--muted)]">
-        <span className="font-medium text-[var(--text)]">
-          Running on fixtures.
-        </span>{" "}
-        Payment links and recovery copy are deterministic stand-ins, so the
-        pipeline runs with no credentials and cannot fail on a network call
-        mid-demo. Request payloads are built identically in both modes — adding
-        keys to{" "}
-        <code className="font-mono text-[10px] text-[var(--text)]">.env</code>{" "}
-        switches to live calls with no code change, and{" "}
-        <code className="font-mono text-[10px] text-[var(--text)]">
-          python -m salvage.verify_live
-        </code>{" "}
-        proves it. Webhook signature verification is real HMAC-SHA256 either
-        way.
-      </p>
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-xl border border-[var(--border)] bg-white px-5 py-3 text-[12px]">
+      <span className="h-1.5 w-1.5 rounded-full bg-[var(--faint)]" />
+      <span className="font-medium text-[var(--text)]">Running on fixtures.</span>
+      <span className="text-[var(--muted)]">
+        Deterministic stand-ins, so the demo cannot fail on a network call.
+        Payloads are identical in both modes.
+      </span>
+      <code className="rounded bg-[#fafafa] px-1.5 py-0.5 font-mono text-[10px] text-[var(--muted)]">
+        salvage.verify_live
+      </code>
+      <span className="text-[var(--muted)]">proves it.</span>
     </div>
   );
 }

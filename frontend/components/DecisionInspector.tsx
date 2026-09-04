@@ -51,6 +51,18 @@ export function DecisionInspector({
   const ex = detail?.execution;
   const out = detail?.outcome;
 
+  // Hard-constraint decisions - a risk block, an opt-out, a high-value
+  // escalation - are resolved before any valuation is computed, so there is no
+  // arithmetic to show. Rendering the panel anyway produced a row of em-dashes
+  // that looked like a data bug rather than a deliberate refusal to price
+  // something the guardrails already settled.
+  const hasMaths = d != null && d.net_ev != null;
+
+  // Sections are numbered as they render. Fixed numbers skipped a step
+  // whenever a section was conditionally absent, so the panel read 1, 2, 4.
+  let step = 0;
+  const n = () => ++step;
+
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
       <div className="absolute inset-0 bg-black/20" onClick={onClose} />
@@ -87,7 +99,7 @@ export function DecisionInspector({
           <div className="space-y-6 p-6">
             {/* 1. Diagnosis, traceable to Razorpay's own documentation. */}
             <section>
-              <SectionTitle>1 · Diagnosis</SectionTitle>
+              <SectionTitle>{n()} · Diagnosis</SectionTitle>
               <Panel>
                 <div className="flex items-center gap-2">
                   <span
@@ -119,9 +131,12 @@ export function DecisionInspector({
               </Panel>
             </section>
 
-            {/* 2. The arithmetic, shown rather than asserted. */}
+            {/* The arithmetic, shown rather than asserted - and omitted
+                entirely when a guardrail settled the decision before any
+                pricing happened. */}
+            {hasMaths && (
             <section>
-              <SectionTitle>2 · The maths</SectionTitle>
+              <SectionTitle>{n()} · The maths</SectionTitle>
               <Panel>
                 <div className="grid grid-cols-2 gap-3 text-[12px] sm:grid-cols-4">
                   <Stat label="propensity" value={percent(d.base_propensity)} />
@@ -150,11 +165,12 @@ export function DecisionInspector({
                 </div>
               </Panel>
             </section>
+            )}
 
-            {/* 3. What was rejected, and by how much. */}
+            {/* What was rejected, and by how much. */}
             {d.considered.length > 0 && (
               <section>
-                <SectionTitle>3 · Alternatives considered</SectionTitle>
+                <SectionTitle>{n()} · Alternatives considered</SectionTitle>
                 <div className="overflow-hidden rounded-xl border border-[var(--border)]">
                   <table className="w-full text-[12px]">
                     <thead className="border-b border-[var(--border)] text-[var(--faint)]">
@@ -210,7 +226,7 @@ export function DecisionInspector({
 
             {/* 4. The rule that fired, named. */}
             <section>
-              <SectionTitle>4 · Decision</SectionTitle>
+              <SectionTitle>{n()} · Decision</SectionTitle>
               <Panel>
                 <div className="flex items-center gap-2">
                   <Badge className={ACTION_STYLE[d.action] ?? ""}>
@@ -241,7 +257,7 @@ export function DecisionInspector({
             {/* 5. What was actually executed. */}
             {ex && (
               <section>
-                <SectionTitle>5 · Execution</SectionTitle>
+                <SectionTitle>{n()} · Execution</SectionTitle>
                 <Panel className="space-y-3">
                   <div className="flex items-center gap-2 text-[12px]">
                     <span className="text-[var(--faint)]">status</span>
@@ -289,7 +305,7 @@ export function DecisionInspector({
             {/* 6. The measured result, with credit honestly assigned. */}
             {out && (
               <section>
-                <SectionTitle>6 · Measured outcome</SectionTitle>
+                <SectionTitle>{n()} · Measured outcome</SectionTitle>
                 <Panel>
                   <div className="grid grid-cols-2 gap-3 text-[12px]">
                     <Stat
@@ -316,7 +332,7 @@ export function DecisionInspector({
             {/* 7. The immutable trail. */}
             {detail && detail.audit_trail.length > 0 && (
               <section>
-                <SectionTitle>7 · Audit trail</SectionTitle>
+                <SectionTitle>{n()} · Audit trail</SectionTitle>
                 <ol className="space-y-2">
                   {detail.audit_trail.map((row) => (
                     <li

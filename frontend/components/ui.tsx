@@ -98,6 +98,7 @@ export function Icon({
         <path d="M21 3v6h-6" />
       </>
     ),
+    chevron: <path d="M6 9l6 6 6-6" />,
     dots: (
       <>
         <circle cx="5" cy="12" r="1.4" />
