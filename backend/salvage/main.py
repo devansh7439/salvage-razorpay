@@ -19,7 +19,7 @@ import threading
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Header, Request
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from salvage import db
@@ -30,6 +30,7 @@ from salvage.integrations import llm, razorpay_client
 from salvage.ml import predict
 from salvage.pipeline import process_batch, record_outcomes
 from salvage.simulator.generate import generate_events
+from salvage.verification import extract_settlement, reconcile, record_settlement
 
 #: Batch used by the dashboard. Fixed seed, distinct from the training corpus,
 #: so every reviewer sees identical numbers.
@@ -166,12 +167,26 @@ async def webhook(
         raise HTTPException(status_code=401, detail="Invalid webhook signature")
 
     payload = json.loads(raw)
+
+    # Settlement events close the loop. Without this branch the system issues
+    # payment links and never learns whether any of them were paid - every
+    # recovery figure would be a forecast rather than a measurement.
+    settlement = extract_settlement(payload)
+    if settlement is not None:
+        event_id = record_settlement(settlement)
+        return {
+            "accepted": True,
+            "kind": "settlement",
+            "matched_event": event_id,
+            "credited": event_id is not None,
+        }
+
     entity = (
         payload.get("payload", {}).get("payment", {}).get("entity", {}) or payload
     )
 
     if entity.get("status") != "failed":
-        return {"accepted": False, "reason": "Not a failed payment"}
+        return {"accepted": False, "reason": "Not a failed payment or settlement"}
 
     from types import SimpleNamespace
 
@@ -204,6 +219,17 @@ async def webhook(
 
     result = process_batch([event])
     return {"accepted": True, **result}
+
+
+@app.post("/api/reconcile")
+def reconcile_payments(limit: int = 100) -> dict[str, Any]:
+    """Poll Razorpay for outstanding payment links that have since been paid.
+
+    The backstop for the webhook path: webhooks get dropped, reordered, and
+    missed during a restart, and a listener-only system silently under-reports
+    recovery while continuing to chase customers who have already paid.
+    """
+    return reconcile(limit=limit)
 
 
 @app.post("/api/simulate/load")

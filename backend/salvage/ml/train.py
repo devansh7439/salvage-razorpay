@@ -25,6 +25,7 @@ merchant's outcome data would exclude payments it never tried to recover.
 
 from __future__ import annotations
 
+import itertools
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -199,7 +200,7 @@ def _calibration_bins(
     """
     edges = np.linspace(0.0, 1.0, n_bins + 1)
     bins: list[dict[str, float]] = []
-    for lo, hi in zip(edges[:-1], edges[1:]):
+    for lo, hi in itertools.pairwise(edges):
         mask = (y_prob >= lo) & (y_prob < hi if hi < 1.0 else y_prob <= hi)
         if not mask.any():
             continue
@@ -324,7 +325,7 @@ def train(
 
 def main() -> None:
     """CLI entry point: `python -m salvage.ml.train`."""
-    pipeline, report = train()
+    _, report = train()
     d = report.to_dict()
 
     print("=" * 68)

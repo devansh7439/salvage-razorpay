@@ -11,10 +11,9 @@ import itertools
 import time
 
 import pytest
-
 from salvage import db
 from salvage.ml import predict
-from salvage.pipeline import _chunks, process_batch, record_outcomes
+from salvage.pipeline import _chunks, process_batch
 from salvage.simulator.generate import (
     MAX_CUSTOMER_POOL,
     generate_events,

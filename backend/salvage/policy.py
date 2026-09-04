@@ -29,7 +29,7 @@ Decisions are made in three ordered stages, and the order is load-bearing:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from salvage.economics import (
     DEFAULT_POLICY,
@@ -109,12 +109,24 @@ class RecoveryContext:
         hours_since_last_contact: None if never contacted.
         customer_opted_out: Whether the customer has withdrawn consent to be
             contacted. Absolute - overrides any expected value.
+        already_recovered: Whether this payment has since been settled - the
+            customer paid through the link, retried on their own, or the
+            merchant collected another way.
+
+            Recovery is asynchronous: a link is issued, and minutes or days
+            later the customer pays. Any scheduled retry, reminder or second
+            link created after that point is chasing money already in the
+            account. At best it wastes spend and annoys someone who has already
+            paid; at worst a retry against a live instrument takes the money
+            twice. Verified state must therefore beat every other input,
+            including a high expected value.
     """
 
     attempts_so_far: int = 0
     contacts_today: int = 0
     hours_since_last_contact: float | None = None
     customer_opted_out: bool = False
+    already_recovered: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,6 +227,21 @@ def decide(
             ),
             constraints_applied=("diagnosis_confidence",),
             is_exception=True,
+        )
+
+    if ctx.already_recovered:
+        # Checked before consent and before economics, because it is the only
+        # constraint whose violation can take a customer's money twice.
+        return PolicyDecision(
+            action=RecoveryAction.DROP,
+            rule_id="HARD_ALREADY_RECOVERED",
+            rationale=(
+                "This payment has since been settled. Recovery is asynchronous, so "
+                "a scheduled retry or reminder can fire after the customer has "
+                "already paid - chasing money that is in the account, and risking "
+                "collecting it twice. Verified settlement overrides expected value."
+            ),
+            constraints_applied=("already_recovered",),
         )
 
     if ctx.customer_opted_out:

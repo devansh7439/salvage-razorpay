@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from salvage.economics import RecoveryAction
 from salvage.simulator.generate import generate_events
 from salvage.simulator.oracle import observe, observe_do_nothing

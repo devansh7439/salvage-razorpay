@@ -28,6 +28,7 @@ from salvage.executor import execute
 from salvage.ml.predict import predict_propensity_batch
 from salvage.policy import RecoveryContext, decide
 from salvage.taxonomy import classify
+from salvage.verification import recovered_event_ids
 
 #: Events per write transaction. Bounds three things at once: peak memory, how
 #: much work a failure can roll back, and how long a writer holds the database.
@@ -203,12 +204,18 @@ def process_batch(
 
         propensities = predict_propensity_batch(window, chunk_size=scoring_window)
 
+        # Recovery is asynchronous: a payment can settle between one batch and
+        # the next. Re-read verified settlement immediately before deciding, so
+        # a scheduled retry cannot fire against money already collected.
+        settled = recovered_event_ids([e.id for e in window])
+
         for start in range(0, len(window), chunk_size):
             result = _write_chunk(
                 window[start : start + chunk_size],
                 propensities[start : start + chunk_size],
                 policy,
                 execute_actions,
+                settled,
             )
             processed += result["processed"]
             exceptions += result["exceptions"]
@@ -230,6 +237,7 @@ def _write_chunk(
     propensities: list[float],
     policy: MerchantPolicy,
     execute_actions: bool,
+    settled: set[str] | None = None,
 ) -> dict[str, Any]:
     """Decide, execute and persist one chunk inside a single transaction.
 
@@ -303,6 +311,7 @@ def _write_chunk(
             context = RecoveryContext(
                 attempts_so_far=max(0, getattr(event, "attempt_number", 1) - 1),
                 contacts_today=contacts.get(getattr(event, "customer_id", ""), 0),
+                already_recovered=event.id in (settled or set()),
             )
             decision = decide(
                 classification, event.amount, propensity, context, policy

@@ -181,7 +181,7 @@ def _call_llm(prompt: str) -> str | None:
         response.raise_for_status()
         text = response.json()["choices"][0]["message"]["content"].strip()
         return text or None
-    except Exception as exc:  # noqa: BLE001 - see docstring
+    except Exception as exc:
         logger.warning("LLM generation failed, falling back to template: %s", exc)
         return None
 

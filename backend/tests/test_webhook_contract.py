@@ -25,7 +25,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 from salvage import db
 from salvage.config import settings
 from salvage.integrations import razorpay_client

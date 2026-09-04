@@ -130,7 +130,7 @@ def create_payment_link(
             provider="razorpay_test",
             raw=response,
         )
-    except Exception as exc:  # noqa: BLE001 - deliberately broad, see docstring
+    except Exception as exc:
         logger.warning("Payment Link creation failed for %s: %s", event.id, exc)
         return PaymentLinkResult(
             ok=False,

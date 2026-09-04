@@ -9,7 +9,6 @@ must hold no matter what the model predicts.
 from __future__ import annotations
 
 import pytest
-
 from salvage.economics import MerchantPolicy, RecoveryAction, value_action
 from salvage.policy import RecoveryContext, decide
 from salvage.taxonomy import FailureClass, classify

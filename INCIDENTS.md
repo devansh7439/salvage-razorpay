@@ -650,3 +650,78 @@ the switch has to be safe under exactly the load it will meet in practice.
 generally: safety controls need tests that exercise them under contention, not
 just tests that assert the flag flipped. This one flipped the flag perfectly
 in single-threaded reasoning and deadlocked the first time it ran.
+
+---
+
+## INC-012 — The VERIFY stage was a comment, not an implementation
+**When:** 2026-09-04, adversarial audit
+**Severity:** Critical — the system could not tell recovered revenue from attempted recovery
+
+**What the audit found.** Mapping the code against the track's own loop —
+DETECT → DIAGNOSE → DECIDE → RECOVER → **VERIFY** → LEARN — the fifth stage did
+not exist. Grepping for a settlement handler returned only this, in `db.py`:
+
+```
+-- Adjudicated results. In production these arrive as payment.captured
+```
+
+A comment describing an intention. The webhook endpoint handled
+`payment.failed` and nothing else. Every outcome in the database came from the
+simulator's oracle, which is correct for evaluation and useless in production:
+a live deployment would have issued payment links and never learned whether a
+single one was paid.
+
+**Why this was the most serious defect in the project.** The track's bar is
+"show *measured* money recovered". Without a verification path, every recovery
+figure is a forecast wearing the clothes of a measurement — and the whole
+argument of this system is that it reports measurements rather than forecasts.
+The gap sat directly under its central claim.
+
+**The safety consequence, which is worse than the reporting one.** Recovery is
+asynchronous: a link is issued on Monday and paid on Wednesday. Nothing in the
+policy engine knew a payment had settled, so a scheduled retry or a second
+reminder could fire against a customer who had already paid. Against a live
+instrument that is not an annoyance, it is taking the money twice.
+
+**Fix — two paths, because they fail differently.**
+
+*Push:* `payment.captured`, `payment.authorized`, `order.paid` and
+`payment_link.paid` webhooks are matched back to the failed payment, in
+descending order of join reliability — our own idempotency key first, then the
+order id, then the payment id.
+
+*Pull:* `reconcile()` polls Razorpay for links we still believe are unpaid.
+Webhooks get dropped, delivered out of order, and missed entirely during a
+restart; a listener-only system silently under-reports recovery and keeps
+chasing people who have already paid. Polling is what makes the push path safe
+to trust.
+
+`HARD_ALREADY_RECOVERED` was added as the *first* hard constraint, checked ahead
+of consent and economics, because it is the only one whose violation can take a
+customer's money twice.
+
+**Credit stays conservative.** A settlement proves the money arrived, not that
+the intervention caused it. Where the decision was DROP, the payment is recorded
+as recovered and `organic`, crediting Salvage nothing — the same discipline
+INC-005 applied to the expected-value model, now applied to verified reality.
+
+**Verified end to end over HTTP:**
+
+```
+POST /webhook  {"event":"payment.captured", ...}
+  -> {"accepted":true,"kind":"settlement","credited":true}
+
+stages: INGESTED -> DIAGNOSED -> SCORED -> DECIDED -> EXECUTED -> OUTCOME -> VERIFIED
+outcome: recovered=True  credited=Rs 31,718  source=razorpay_webhook
+```
+
+17 tests, including the one that matters: settle a payment, replay the batch,
+assert no second intervention is executed and the decision flips to
+`HARD_ALREADY_RECOVERED`.
+
+**Lesson applied.** A comment saying "in production this arrives as X" is a
+todo, not a design. This one survived weeks of work because everything
+downstream of it — the metrics, the dashboard, the evaluation — was fed by the
+simulator and therefore looked complete. The gap was only visible by walking
+the required stages one at a time and asking, for each, *which line of code
+does this*.

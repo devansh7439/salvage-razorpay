@@ -16,7 +16,7 @@ own amount convention, so no float rounding ever touches a rupee figure.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 
 

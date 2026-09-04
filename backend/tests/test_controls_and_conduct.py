@@ -14,9 +14,8 @@ from __future__ import annotations
 import threading
 
 import pytest
-
 from salvage import db
-from salvage.controls import AgentControls, AgentMode, ControlPlane
+from salvage.controls import AgentMode, ControlPlane
 from salvage.economics import RecoveryAction
 from salvage.integrations.llm import (
     DARK_PATTERN_MARKERS,
@@ -95,8 +94,8 @@ class TestKillSwitch:
         def reader() -> None:
             try:
                 for _ in range(200):
-                    plane.get().executes
-            except BaseException as exc:  # noqa: BLE001
+                    assert plane.get().executes is not None
+            except BaseException as exc:
                 errors.append(exc)
 
         def writer() -> None:
@@ -105,7 +104,7 @@ class TestKillSwitch:
                     plane.kill()
                     plane.set(enabled=True)
                 done.set()
-            except BaseException as exc:  # noqa: BLE001
+            except BaseException as exc:
                 errors.append(exc)
 
         threads = [threading.Thread(target=reader, daemon=True) for _ in range(3)]
