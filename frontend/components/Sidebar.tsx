@@ -79,7 +79,13 @@ export function Sidebar({
         </p>
       </div>
 
-      <nav className="flex-1 overflow-y-auto px-3">
+      {/* Navigation and utility links share one scrollable region, so the
+          slack collects in a single place just above the pinned cards rather
+          than opening a gap in the middle of the rail. The region scrolls
+          because the bottom block is now tall enough to overflow a short
+          viewport. */}
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+      <nav className="px-3">
         {GROUPS.map((group) => (
           <div key={group.label} className="mb-5">
             <div className="px-2 pb-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--faint)]">
@@ -131,16 +137,19 @@ export function Sidebar({
         </div>
       </div>
 
-      <div className="m-3 mb-0">
-        <AgentControlPanel
-          controls={controls}
-          onChange={onControlChange}
-          busy={busy}
-        />
+      {/* All remaining slack, in one place. */}
+      <div className="flex-1" />
       </div>
 
+      <div className="shrink-0 space-y-2 border-t border-[var(--border)] p-3">
+      <AgentControlPanel
+        controls={controls}
+        onChange={onControlChange}
+        busy={busy}
+      />
+
       {/* The one number that answers "did this work?", without navigating. */}
-      <div className="m-3 mt-3 rounded-xl border border-[var(--border)] bg-[#fbfbfc] p-4">
+      <div className="rounded-xl border border-[var(--border)] bg-[#fbfbfc] p-4">
         <div className="flex items-center justify-between">
           <span className="flex items-center gap-1.5 text-[12px] text-[var(--muted)]">
             <Icon name="sparkle" className="h-3.5 w-3.5" />
@@ -167,6 +176,7 @@ export function Sidebar({
         >
           {busy ? "Processing…" : "Run batch"}
         </button>
+      </div>
       </div>
     </aside>
   );
