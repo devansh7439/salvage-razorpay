@@ -258,13 +258,20 @@ All three paths have been exercised live - a genuine `rzp.io` Payment Link
 against Razorpay Test Mode, a model-written Hinglish message from Groq, and
 signature enforcement, which needs no credentials and passes on a clean clone.
 
-**The checked-in receipt currently shows Payment Links as `FAIL`.** That is
-Razorpay's Test Mode rate limiter, tripped while measuring the per-event API
-cost that motivated the provenance gate described under *Going live* - Test
-Mode allows 30 Payment Links per account in total. It clears with time, and a
-fresh account passes on the first run. The receipt is left as it is rather
-than regenerated at a convenient moment, because a verification script whose
-output is curated proves nothing.
+**The checked-in receipt shows Payment Links as `FAIL`.** The account used to
+build this has spent its Test Mode quota: Razorpay allows 30 Payment Links per
+account, and that limit is cumulative over the account's lifetime rather than a
+count of live links - cancelling the existing thirty does not return any of it,
+which I established by cancelling one and watching creation fail identically.
+They were spent measuring the per-event API cost that motivated the provenance
+gate described under *Going live*, which is exactly the mistake that gate now
+makes impossible.
+
+Live Payment Link creation was verified before the quota ran out - real
+`rzp.io` links against a real hosted checkout. Any account with quota remaining
+passes on the first run. The receipt is left failing rather than regenerated
+against a fresh account, because a verification script whose output is curated
+until it looks good is not evidence of anything.
 
 ---
 
